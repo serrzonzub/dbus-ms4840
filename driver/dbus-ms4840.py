@@ -158,6 +158,7 @@ for day in range(history_days):
         }
     )
 
+# we need to know what serialport / usb to connect to
 if len(sys.argv) > 1:
     controller = minimalmodbus.Instrument(sys.argv[1], 1)
     servicename = 'com.victronenergy.solarcharger.' + sys.argv[1].split('/')[2]
@@ -191,6 +192,7 @@ class MS4840(object):
         _s = lambda p, v: (str("%s" % v))
 
         self.got_history = False
+        self.loop_index = 0
         self.solar_controller = {}
         self.solar_controller_history = {}
         self.pdu_addresses = {\
@@ -255,40 +257,13 @@ class MS4840(object):
 
         self._dbusservice['/NrOfTrackers'] = total_trackers
 
-        # create the dictionary holding read values
-        #for pdu_address in self.pdu_addresses:
-        #    pdu_name = pdu_address
-        #    self.solar_controller[pdu_name] = [0]
-        #print(self.solar_controller)
-
-        def _get_solar_charger_history(self, days):
-            if self.got_history == False:
-                days = (self.solar_controller["uptime"][0] - 1)
-
-            if days > history_days:
-                days = (history_days - 1)
-
-            for day in range(days):
-                # variable name in solar_controller
-                value_key = str(day) + "hist"
-                yield_key = "/History/Daily/" + str(day) + "/Yield"
-                maxpower_key = "/History/Daily/" + str(day) + "/MaxPower"
-                reg = int(1024 + day)
-                print(f"trying to get day {day} of {days} of history (reg: {reg})")
-                self.solar_controller_history[day] = controller.read_registers(reg, 5, 3)
-                self.dbusservice[yield_key] = (self.solar_controller[value_key][0] / 1000)
-                self.dbusservice[maxpower_key] = (self.solar_controller[value_key][2])
-
-            print(self.solar_controller_history)
-            self.got_history = True
-
         # register the update function for the dbus paths
         GLib.timeout_add(1000, self._update)
 
     def _handlechangedvalue(self, path, value):
         logging.debug("someone else updated %s to %s" % (path, value))
         return True  # accept the change
-    
+  
     def _update(self):
         global exceptionCounter
         start_time = time.process_time()
@@ -351,14 +326,15 @@ class MS4840(object):
             self._dbusservice['/Dc/0/Current'] = (self.solar_controller["solar_current"][0] * 0.01)
             self._dbusservice['/Dc/0/Temperature'] = (self.solar_controller["temperatures"][0] >> 0 & 0xff) # <-- lower 8 bits
             self._dbusservice['/MppTemperature'] = (self.solar_controller["temperatures"][0] >> 8 & 0xff) # <-- lower 8 bits
-            # t2 = value >> 8 & 0xff < --> upper 8 bits
+            # t2 = value >> 8 & 0xff < upper 8 bits
             self._dbusservice['/Pv/V'] = (self.solar_controller["solar_voltage"][0] / 10)
             self._dbusservice['/Pv/P'] = (self.solar_controller["solar_power"][0])
             self._dbusservice['/Yield/Power'] = (self.solar_controller["solar_power"][0])
 
-            # i don't have a load option on the bougerv ms4840/helios ms4840 mppt controller
-            self._dbusservice['/Load/State'] = 0
-            #self._dbusservice['/Load/I'] = c3100[13]/100
+            # no load option on the bouger/helios ms4840n mppt controller
+            if self.loop_index == 0: # effectively only update every 255 seconds
+                self._dbusservice['/Load/State'] = 0
+                self._dbusservice['/Load/I'] = 0
 
             self._dbusservice['/History/Overall/DaysAvailable'] = (self.solar_controller["uptime"][0])
             self._dbusservice['/History/Daily/0/Yield'] = (self.solar_controller["power_gen_day"][0] / 1000)
@@ -395,9 +371,9 @@ class MS4840(object):
             self._dbusservice['/Yield/System'] = (self.solar_controller['total_power_generation'][1])
 
         # increment UpdateIndex - to show that new data is available
-        index = self._dbusservice["/UpdateIndex"] + 1  # increment index
-        if index > 255:  # maximum value of the index
-            index = 0  # overflow from 255 to 0
+        self.loop_index = self._dbusservice["/UpdateIndex"] + 1  # increment index
+        if self.loop_index > 255:  # maximum value of the index
+            self.loop_index = 0  # overflow from 255 to 0
         self._dbusservice["/UpdateIndex"] = index
         
         
@@ -425,7 +401,7 @@ def main():
     }
     solar_charger_dict.update(paths_dbus)
 
-    # create the object
+    # create the mppt soalr charger object
     ms4840 = MS4840(paths = solar_charger_dict)
 
     # and off to the races we go
