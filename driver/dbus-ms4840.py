@@ -94,6 +94,7 @@ solar_charger_dict = {
     "/NrOfTrackers": {"value": None, "textformat": _n},
     "/Pv/V": {"value": None, "textformat": _v},
     "/Pv/P": {"value": None, "textformat": _w},
+    "/Pv/Name": {"value": None, "textformat": _s},
     "/Pv/0/V": {"value": None, "textformat": _v},
     "/Pv/1/V": {"value": None, "textformat": _v},
     "/Pv/2/V": {"value": None, "textformat": _v},
@@ -196,9 +197,9 @@ class MS4840(object):
         self.solar_controller = {}
         self.solar_controller_history = {}
         self.pdu_addresses = {\
-            "sver": {"reg": 20, "len": 8}, # 0x0014h\
-            "hver": {"reg": 21, "len": 8}, # 0x0015h\
-            "system information": {"reg": 12, "len": 8}, # 0x000Ch\
+            "sver": {"reg": 20, "len": 1}, # 0x0014h\
+            "hver": {"reg": 21, "len": 1}, # 0x0015h\
+            "system_info": {"reg": 12, "len": 8}, # 0x000Ch\
             
             "load_status": {"reg": 269, "len": 1}, # 0x010Dh\
             "current_system_voltage": {"reg": 256, "len": 1}, # 0x0100h\
@@ -241,7 +242,7 @@ class MS4840(object):
         self._dbusservice.add_path('/HardwareVersion', hardwareversion)
         self._dbusservice.add_path('/Connected', 1)
         self._dbusservice.add_path('/Serial', serialnumber)
-        self._dbusservice.add_path('/CustomName', None, writeable=True)
+        self._dbusservice.add_path('/CustomName', '', writeable=True)
 
         for path, settings in self._paths.items():
             self._dbusservice.add_path(
@@ -260,6 +261,9 @@ class MS4840(object):
         # register the update function for the dbus paths
         GLib.timeout_add(1000, self._update)
 
+    def _update_once(self):
+        pass
+
     def _handlechangedvalue(self, path, value):
         logging.debug("someone else updated %s to %s" % (path, value))
         return True  # accept the change
@@ -267,6 +271,23 @@ class MS4840(object):
     def _update(self):
         global exceptionCounter
         start_time = time.process_time()
+
+        def _convert_to_string(data):
+            # data = [8224, 19795, 11572, 14388, 12366, 8224, 8224, 8224]
+            si=[]
+            for byte in data:
+                t = hex(byte)
+                t1 = t[:-2] # get the first hex number
+                t2 = "0x" + t[-2:] # get the second hex number
+                #print(f't={t} t1={t1}, t2={t2}')
+                si.append(hex(int(t1, 16)))
+                si.append(hex(int(t2, 16)))
+
+            # convert it to a byte array
+            result = bytes([int(x,0) for x in si])
+
+            # return it as a string ("MS-4840N")
+            return result.decode('utf-8').strip()
 
         # translate the ms4840 mptt state to victron's state
         def _calculate_state(status, s_curr, b_volt):
@@ -293,6 +314,7 @@ class MS4840(object):
                 return 3 # default to equalizing charge?
 
         # go get the data from the solar controller (mppt)
+        #    everything returns as a list
         try:
             for pdu_address in self.pdu_addresses:
                 pdu_name = pdu_address
@@ -322,6 +344,11 @@ class MS4840(object):
         # all seems to have gone well, let's process the data
         else:
             #print(self.solar_controller)
+            self._dbusservice['/ProductName'] = _convert_to_string(self.solar_controller['system_info'])
+            # these are just converted to integers and divided by 100 (for now)
+            self._dbusservice['/FirmwareVersion'] = (self.solar_controller['sver'][0] / 100)
+            self._dbusservice['/HardwareVersion'] = (self.solar_controller['hver'][0] / 100)
+
             self._dbusservice['/Dc/0/Voltage'] = (self.solar_controller["battery_voltage"][0] / 10 )
             self._dbusservice['/Dc/0/Current'] = (self.solar_controller["solar_current"][0] * 0.01)
             self._dbusservice['/Dc/0/Temperature'] = (self.solar_controller["temperatures"][0] >> 0 & 0xff) # <-- lower 8 bits

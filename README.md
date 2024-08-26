@@ -20,3 +20,4 @@ thanks to all the various people who came before me to help me understand and cr
 TODO:
 - make it auto start (still working on the daemontool service setup)
   - right now i use `nohup python /data/dbus-ms4840/driver/dbus-ms4840.py /dev/ttyUSB1 &` or `screen python /data/dbus-ms4840/driver/dbus-ms4840.py /dev/ttyUSB1`
+- retain battery Vmin/Vmax/Imax history (will store to local file) as the controller doesn't store this long term
