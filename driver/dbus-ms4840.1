@@ -1,0 +1,347 @@
+#!/usr/bin/python
+
+# screen shots and mqtt -> dbus
+# https://github.com/mr-manuel/venus-os_dbus-mqtt-solar-charger
+
+# example used to create this
+# https://github.com/kassl-2007/dbus-epever-tracer/blob/master/driver/dbus-epever-tracer.py
+
+# to test
+# /opt/victronenergy/serial-starter/stop-tty.sh ttyUSB1
+
+from asyncio import exceptions
+import logging
+import serial
+import minimalmodbus
+import time
+from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib
+import dbus
+import dbus.service
+import os
+import sys
+import platform
+import argparse
+
+# victron packages
+sys.path.insert(
+    1,
+    os.path.join(
+        os.path.dirname(__file__),
+        "../ext/velib_python",
+    ),
+)
+from vedbus import VeDbusService  # noqa: E402
+from settingsdevice import (  # noqa: E402
+    SettingsDevice,
+)
+
+# variables
+softwareversion = '0.8'
+serialnumber = '0000000000000000'
+productname='ms4840'
+hardwareversion = '00.00'
+firmwareversion = '00.00'
+connection = 'USB'
+servicename = 'com.victronenergy.solarcharger.tty'
+deviceinstance = 290    #VRM instanze
+exceptionCounter = 0
+#state = [0,5,3,6]
+history_days = 10
+
+# formatting
+def _a(p, v):
+    return str("%.1f" % v) + "A"
+
+
+def _n(p, v):
+    return str("%i" % v)
+
+
+def _s(p, v):
+    return str("%s" % v)
+
+
+def _v(p, v):
+    return str("%.2f" % v) + "V"
+
+
+def _w(p, v):
+    return str("%i" % v) + "W"
+
+
+def _kwh(p, v):
+    return str("%i" % v) + "kWh"
+
+solar_charger_dict = {
+    # general data
+    "/NrOfTrackers": {"value": None, "textformat": _n},
+    "/Pv/V": {"value": None, "textformat": _v},
+    "/Pv/0/V": {"value": None, "textformat": _v},
+    "/Pv/1/V": {"value": None, "textformat": _v},
+    "/Pv/2/V": {"value": None, "textformat": _v},
+    "/Pv/3/V": {"value": None, "textformat": _v},
+    "/Pv/0/P": {"value": None, "textformat": _w},
+    "/Pv/1/P": {"value": None, "textformat": _w},
+    "/Pv/2/P": {"value": None, "textformat": _w},
+    "/Pv/3/P": {"value": None, "textformat": _w},
+    "/Yield/Power": {"value": None, "textformat": _w},
+    # external control
+    "/Link/NetworkMode": {"value": None, "textformat": _s},
+    "/Link/BatteryCurrent": {"value": None, "textformat": _a},
+    "/Link/ChargeCurrent": {"value": None, "textformat": _a},
+    "/Link/ChargeVoltage": {"value": None, "textformat": _v},
+    "/Link/NetworkStatus": {"value": None, "textformat": _s},
+    "/Link/TemperatureSense": {"value": None, "textformat": _n},
+    "/Link/TemperatureSenseActive": {"value": None, "textformat": _n},
+    "/Link/VoltageSense": {"value": None, "textformat": _n},
+    "/Link/VoltageSenseActive": {"value": None, "textformat": _n},
+    # settings
+    "/Settings/BmsPresent": {"value": None, "textformat": _n},
+    "/Settings/ChargeCurrentLimit": {"value": None, "textformat": _n},
+    # other paths
+    "/Dc/0/Voltage": {"value": None, "textformat": _v},
+    "/Dc/0/Current": {"value": None, "textformat": _a},
+    "/Yield/User": {"value": None, "textformat": _kwh},
+    "/Yield/System": {"value": None, "textformat": _kwh},
+    "/Load/State": {"value": None, "textformat": _n},
+    "/Load/I": {"value": None, "textformat": _a},
+    "/ErrorCode": {"value": 0, "textformat": _n},
+    "/State": {"value": 0, "textformat": _n},
+    "/Mode": {"value": None, "textformat": _n},
+    "/MppOperationMode": {"value": None, "textformat": _n},
+    "/DeviceOffReason": {"value": None, "textformat": _s},
+    "/Relay/0/State": {"value": None, "textformat": _n},
+    # alarms
+    "/Alarms/LowVoltage": {"value": None, "textformat": _n},
+    "/Alarms/HighVoltage": {"value": None, "textformat": _n},
+    # history
+    "/History/Overall/DaysAvailable": {"value": history_days, "textformat": _n},
+    "/History/Overall/MaxPvVoltage": {"value": None, "textformat": _n},
+    "/History/Overall/MaxBatteryVoltage": {"value": None, "textformat": _n},
+    "/History/Overall/MinBatteryVoltage": {"value": None, "textformat": _n},
+    "/History/Overall/LastError1": {"value": None, "textformat": _n},
+    "/History/Overall/LastError2": {"value": None, "textformat": _n},
+    "/History/Overall/LastError3": {"value": None, "textformat": _n},
+    "/History/Overall/LastError4": {"value": None, "textformat": _n},
+}
+
+if len(sys.argv) > 1:
+    controller = minimalmodbus.Instrument(sys.argv[1], 1)
+    servicename = 'com.victronenergy.solarcharger.' + sys.argv[1].split('/')[2]
+else:
+    print(f"no serial port given. bye.")
+    sys.exit()
+
+controller.serial.baudrate = 9600
+controller.serial.bytesize = 8
+controller.serial.parity = serial.PARITY_NONE
+controller.serial.stopbits = 1
+controller.serial.timeout = 0.2
+controller.mode = minimalmodbus.MODE_RTU
+controller.clear_buffers_before_each_transaction = True
+#controller.close_port_afer_each_call = True
+
+print(__file__ + " is starting up, use -h argument to see optional arguments")
+
+class MS4840(object):
+    def __init__(self, paths):
+        self._dbusservice = VeDbusService(servicename, register=False)
+        self._paths = paths
+        self.history = False
+
+
+
+        _kwh = lambda p, v: (str("%i" % v) + 'kWh')
+        _a = lambda p, v: (str("%.1f" % v) + 'A')
+        _w = lambda p, v: (str("%.1f" % v) + 'W')
+        _v = lambda p, v: (str("%.2f" % v) + 'V')
+        _c = lambda p, v: (str(v) + '°C')
+        _n = lambda p, v: (str("%i" % v))
+        _s = lambda p, v: (str("%s" % v))
+
+        logging.debug("%s /DeviceInstance = %d" % (servicename, deviceinstance))
+
+        # Create the management objects, as specified in the ccgx dbus-api document
+        self._dbusservice.add_path('/Mgmt/ProcessName', __file__)
+        self._dbusservice.add_path('/Mgmt/ProcessVersion', softwareversion)
+        self._dbusservice.add_path('/Mgmt/Connection', connection)
+
+        # Create the mandatory objects
+        self._dbusservice.add_path('/DeviceInstance', deviceinstance)
+        self._dbusservice.add_path('/ProductId', 1)
+        self._dbusservice.add_path('/ProductName', productname)
+        self._dbusservice.add_path('/FirmwareVersion', firmwareversion)
+        self._dbusservice.add_path('/HardwareVersion', hardwareversion)
+        self._dbusservice.add_path('/Connected', 1)
+        self._dbusservice.add_path('/Serial', serialnumber)
+        self._dbusservice.add_path('/CustomName', None, writeable=True)
+
+        for path, settings in self._paths.items():
+            self._dbusservice.add_path(
+                path,
+                settings["value"],
+                gettextcallback=settings["textformat"],
+                writeable=True,
+                onchangecallback=self._handlechangedvalue,
+            )
+        
+        # register the paths
+        self._dbusservice.register()
+        
+        GLib.timeout_add(1000, self._update)
+
+    def _handlechangedvalue(self, path, value):
+        logging.debug("someone else updated %s to %s" % (path, value))
+        return True  # accept the change
+    
+    def _update(self):
+        global exceptionCounter
+
+        def _convert_charging_status(status):
+            return 3
+            # always return a number
+            status = int(status[0])
+            if status == "0":
+                return 0 # off
+            elif status == 1:
+                return 0 # off
+            elif status == 2: # mptt
+                return 2 # mppt tracker active
+            elif status == 3:
+                return 1 # voltage or current limited
+            elif status == 4:  # float
+                return 2 # mppt tracker active
+            else:
+                return 0
+        
+        def _calculate_state(status, s_curr, b_volt):
+            if status == 0:
+                return 0
+            elif status == 2: # mptt
+                # calculate which mode we are in
+                if s_curr > 10:
+                    return 3
+                elif s_curr > 3 and s_curr < 10:
+                    return 4
+                elif s_curr < 3:
+                    return 5
+                return 3 # mppt tracker active
+            else:
+                return 3
+
+        try:
+            for pdu_address in self.pdu_addresses:
+                pdu_name = pdu_address
+                reg = self.pdu_addresses[pdu_address]['reg']
+                reg_len = self.pdu_addresses[pdu_address]['len']
+                print(f"trying to read reg: {reg} - name: {pdu_name}")
+                pdu_value = controller.read_registers(reg, reg_len, 3)
+                print(pdu_value)
+
+        except IOError as e:
+            print(f"read_register failed")
+            print(e)
+            """
+            battery_power = controller.read_registers(257, 1, 3) # in percentage
+            battery_voltage = controller.read_registers(258, 1, 3) # *.01
+            solar_current = controller.read_registers(259, 1, 3)
+            solar_power = controller.read_registers(260, 1, 3)
+            temperatures = controller.read_registers(261, 1, 3)
+            solar_voltage = controller.read_registers(265, 1, 3)
+            max_power_day = controller.read_registers(266, 1, 3)
+            power_gen_day = controller.read_registers(267, 1, 3)
+            load_status = controller.read_registers(269, 1, 3)
+            total_power = controller.read_registers(272, 2, 3) # total/comulative power generation
+            
+            # get history the first time
+            if self.history == False:
+                # get the number of days of history
+                #days_available = controller.read_registers(271, 1, 3)
+                # make sure we don't try and get non-existant dat
+                if days_available[0] < days_of_history:
+                    days_of_history = days_available[0]
+                
+                history = dict()
+                days = range(days_available)
+                for day in days:
+                    print(f'reading day {day}')
+                    #history[day] = controller.read_registers((1024 + day), 5, 3)
+                    print(history[day])
+
+                print(history)
+
+        except IOError as e:
+            print(f"read_register failed")
+            print(e)
+        except:
+            print(exceptions)
+            exceptionCounter +=1
+            if exceptionCounter  >= 3:
+                print(f"sleeping for 3")
+                exceptionCounter = 0
+                time.sleep(3)
+        else:
+            logging.debug("stat=%d s_v=%d s_p=%d s_c=%d bat_v=%d bat_p=%d tot_p=%d max_p=%d max_y=%d" % \
+                           (load_status[0], solar_voltage[0], solar_current[0], \
+                            solar_power[0], battery_power[0], battery_voltage[0], \
+                            total_power[1], max_power_day[0], power_gen_day[0]))
+            self._dbusservice['/Dc/0/Voltage'] = (battery_voltage[0] / 10 )
+            self._dbusservice['/Dc/0/Current'] = (solar_current[0] * 0.01)
+            self._dbusservice['/Dc/0/Temperature'] = (temperatures[0] >> 0 & 0xff) # <-- lower 8 bits
+            # t2 = value >> 8 & 0xff < --> upper 8 bits
+            self._dbusservice['/Pv/V'] = (solar_voltage[0] / 10)
+            self._dbusservice['/Pv/P'] = (solar_power[0])
+            self._dbusservice['/Yield/Power'] = (solar_power[0])
+
+            # i don't have a load option on the bougerv ms4840/helios ms4840 mppt controller
+            self._dbusservice['/Load/State'] = 0
+            #self._dbusservice['/Load/I'] = c3100[13]/100
+
+            # state is the current method the battery is being charged (bulk, absortion, float)
+            state = _calculate_state(load_status[0], (solar_current[0] * 0.01), (battery_voltage[0] / 10 ))
+            print(f"state={state}")
+            self._dbusservice['/State'] = state
+            # i believe this sets what the mppt should do is venus was in bms control
+            self._dbusservice['/MppOperationMode'] = _convert_charging_status(load_status)
+
+            #self._dbusservice['/Yield/User'] =(c3300[18] | c3300[19] << 8)/100
+            self._dbusservice['/History/Daily/0/Yield'] = (power_gen_day[0] / 1000)
+            self._dbusservice['/History/Daily/0/MaxPower'] = (max_power_day[0])
+            if self.history == False:
+                self._dbusservice['/History/Daily/1/Yield'] = (yesterday[0] / 1000)
+                self._dbusservice['/History/Daily/1/MaxPower'] = (yesterday[2])
+                self._dbusservice['/History/Overall/DaysAvailable'] = days_available[0]
+                days = range(2, int(days_available[0]))
+                for day in days:
+                    history_data = controller.read_registers((1024 + day), 5, 3)
+
+                self.history = True
+            
+            #if self._dbusservice['/Yield/Power'] > self._dbusservice['/History/Daily/0/MaxPower']:
+            #    self._dbusservice['/History/Daily/0/MaxPower'] = self._dbusservice['/Yield/Power']
+        """
+        return True
+
+def main():
+    logging.basicConfig(level=logging.DEBUG)
+
+    from dbus.mainloop.glib import DBusGMainLoop
+    # Have a mainloop, so we can send/receive asynchronous calls to and from dbus
+    DBusGMainLoop(set_as_default=True)
+
+    # create the paths
+    paths_dbus = {
+        "/UpdateIndex": {"value": 0, "textformat": _n},
+    }
+    paths_dbus.update(solar_charger_dict)
+
+    ms4840 = MS4840(paths = paths_dbus)
+
+    logging.info('Connected to dbus, and switching over to GLib.MainLoop() (= event based)')
+    mainloop = GLib.MainLoop()
+    mainloop.run()
+
+
+if __name__ == "__main__":
+    main()
