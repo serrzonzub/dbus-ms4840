@@ -183,15 +183,6 @@ class MS4840(object):
         self._dbusservice = VeDbusService(servicename, register=False)
         self._paths = paths
 
-        # path conversion functions
-        _kwh = lambda p, v: (str("%i" % v) + 'kWh')
-        _a = lambda p, v: (str("%.1f" % v) + 'A')
-        _w = lambda p, v: (str("%.1f" % v) + 'W')
-        _v = lambda p, v: (str("%.2f" % v) + 'V')
-        _c = lambda p, v: (str(v) + '°C')
-        _n = lambda p, v: (str("%i" % v))
-        _s = lambda p, v: (str("%s" % v))
-
         self.got_history = False
         self.loop_index = 0
         self.solar_controller = {}
@@ -274,20 +265,16 @@ class MS4840(object):
 
         def _convert_to_string(data):
             # data = [8224, 19795, 11572, 14388, 12366, 8224, 8224, 8224]
-            si=[]
+            res = ''
             for byte in data:
-                t = hex(byte)
-                t1 = t[:-2] # get the first hex number
-                t2 = "0x" + t[-2:] # get the second hex number
-                #print(f't={t} t1={t1}, t2={t2}')
-                si.append(hex(int(t1, 16)))
-                si.append(hex(int(t2, 16)))
+                b1 = (byte >> 8 & 0xff) # 2 MSBs
+                b2 = (byte & 0xff) # 2 LSBs
+                res = res + chr(b1) + chr(b2)
 
-            # convert it to a byte array
-            result = bytes([int(x,0) for x in si])
+            #print(res.strip())
 
-            # return it as a string ("MS-4840N")
-            return result.decode('utf-8').strip()
+            # return it the stripped string ("MS-4840N")
+            return res.strip()
 
         # translate the ms4840 mptt state to victron's state
         def _calculate_state(status, s_curr, b_volt):
