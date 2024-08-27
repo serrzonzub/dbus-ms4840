@@ -6,8 +6,10 @@
 # screen shots and mqtt -> dbus
 # https://github.com/mr-manuel/venus-os_dbus-mqtt-solar-charger
 
-# example used to create this
+# example projects used to create this "masterpiece"
 # https://github.com/kassl-2007/dbus-epever-tracer/blob/master/driver/dbus-epever-tracer.py
+# https://github.com/rosswarren/epevermodbus/blob/main/epevermodbus/driver.py
+# https://github.com/mr-manuel/venus-os_dbus-mqtt-solar-charger/blob/master/dbus-mqtt-solar-charger/dbus-mqtt-solar-charger.py
 
 # to test
 # /opt/victronenergy/serial-starter/stop-tty.sh ttyUSB1
@@ -330,6 +332,7 @@ class MS4840(object):
                 time.sleep(3)
         # all seems to have gone well, let's process the data
         else:
+            exceptionCounter = 0
             #print(self.solar_controller)
             self._dbusservice['/ProductName'] = _convert_to_string(self.solar_controller['system_info'])
             # these are just converted to integers and divided by 100 (for now)
