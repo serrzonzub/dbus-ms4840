@@ -2,15 +2,11 @@ this is for reading via minimodbus a helios ms4840 or bougerv mppt controller an
 
 this is a very basic version and i have no idea if i'm doing it all correctly.
 
-rs485 cable pin-out:
-| pin | used for |
-| --- | ---------|
-| pin 1 | vdd (3.3v) |
-| pin 2 | vdd (3.3v) |
-| pin 3 | gnd | 
-| pin 4 | gnd |
-| ping 5 | D- |
-| ping 6 | D+ |
+
+
+left image is the port on the device; right is the RJ12 connect on the cable
+![image](https://github.com/user-attachments/assets/52a5bc37-1c00-434b-8dbb-41885b793b71)
+
 
 thanks to all the various people who came before me to help me understand and create a working version of this
 
