@@ -48,7 +48,6 @@ then
     chmod +x /data/${data_dir}/service/run
     chmod +x /data/${data_dir}/service/log/run
 
-    ln -s /data/${data_dir}/driver /opt/victronenergy/${data_dir}
-    ln -s /data/${data_dir}/service /opt/victronenergy/service-templates/${data_dir}
+	# put in entry for rc.local
     echo "To finish, reboot the Venus OS device"
 fi

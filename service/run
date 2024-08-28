@@ -1,3 +1,5 @@
 #!/bin/sh
 exec 2>&1
-exec /opt/victronenergy/dbus-ms4840/start-dbus-ms4840.sh TTY
+
+# change the tty parameter as needed
+python /data/dbus-ms4840/driver/dbus-ms4840.py /dev/ttyUSB1

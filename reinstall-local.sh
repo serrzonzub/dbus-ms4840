@@ -3,4 +3,7 @@
 # remove comment for easier troubleshooting
 #set -x
 
-cp -rf /data/etc/dbus-ms4840/service /opt/victronenergy/service-templates/dbus-ms4840
+# copy the service "templates" into /service and make them executable
+cp -rf /data/dbus-ms4840/service /service/dbus-ms4840
+chmod +x /service/dbus-ms4840/run
+chmod +x /service/dbus-ms4840/log/run
