@@ -129,7 +129,7 @@ solar_charger_dict = {
     "/Dc/0/Current": {"value": None, "textformat": _a},
     "/Dc/0/Temperature": {"value": None, "textformat": _C},
     "/MppTemperature": {"value": None, "textformat": _C},
-    "/Yield/User": {"value": None, "textformat": _kwh},
+    "/Yield/User": {"value": None, "textformat": _wh},
     "/Yield/System": {"value": None, "textformat": _wh},
     "/Load/State": {"value": None, "textformat": _n},
     "/Load/I": {"value": None, "textformat": _a},
@@ -142,6 +142,8 @@ solar_charger_dict = {
     # alarms
     "/Alarms/LowVoltage": {"value": None, "textformat": _n},
     "/Alarms/HighVoltage": {"value": None, "textformat": _n},
+    "/Alarms/HighTemperature": {"value": None, "textformat": _n},
+    "/Alarms/ShortCircuit": {"value": None, "textformat": _n},
     # history (daily is created dynamically below)
     #"/History/Daily/0/Yield": {"value": 0, "textformat": _kwh},
     #"/History/Daily/0/MaxPower": {"value": 0, "0": _w},
@@ -217,7 +219,7 @@ class MS4840(object):
             "solar_voltage": {"reg": 265, "len": 1}, # 0x0109h
             "max_power_day": {"reg": 266, "len": 1}, # 0x010Ah
             "power_gen_day": {"reg": 267, "len": 1}, # 0x010Bh
-            "error_code": {"reg": 270, "len": 1}, # 0x010Eh
+            "alarm_info": {"reg": 270, "len": 1}, # 0x010Eh
             "battery_type": {"reg": 515, "len": 1}, # 0x0202h
             "uptime": {"reg": 271, "len": 1}, # 0x010fh
             "total_power_generation": {"reg": 272, "len": 2}, # 0x0110-0x0111h, also total yield?
@@ -368,7 +370,8 @@ class MS4840(object):
 
             self._dbusservice['/Pv/V'] = (self.solar_controller["solar_voltage"][0] / 10)
             self._dbusservice['/Pv/P'] = (self.solar_controller["solar_power"][0])
-            self._dbusservice['/Yield/Power'] = (self.solar_controller["solar_power"][0])
+            self._dbusservice['/Yield/Power'] = (self.solar_controller["solar_power"][0]) # in Wh (System yiild in GUI)
+            self._dbusservice['/Yield/User'] = (self.solar_controller["power_gen_day"][0]) # in Wh (Total yield in GUI)
 
             self._dbusservice['/History/Overall/DaysAvailable'] = (self.solar_controller["uptime"][0])
             self._dbusservice['/History/Daily/0/Yield'] = (self.solar_controller["power_gen_day"][0] / 1000) # in watts
@@ -392,11 +395,11 @@ class MS4840(object):
                 self._dbusservice[f"/History/Daily/{day}/MaxBatteryVoltage"] = ((self.solar_controller[history_key][3]) / 10)
                 self._dbusservice[f"/History/Daily/{day}/MinBatteryVoltage"] = ((self.solar_controller[history_key][4]) / 10)
 
-            # if we have a new maximum battery current, reflect it today
+            # if we have a new maximum battery current, reflect it today - this is not stored on the ms4840n
             if self._dbusservice['/Dc/0/Current'] > self._dbusservice['/History/Daily/0/MaxBatteryCurrent']:
                 self._dbusservice['/History/Daily/0/MaxBatteryCurrent'] = self._dbusservice['/Dc/0/Current']
 
-            # if we have a new maximum solar voltage, reflect it today - this is not stored on device
+            # if we have a new maximum solar voltage, reflect it today - this is not stored on the ms4840n
             if self._dbusservice['/Pv/V'] > self._dbusservice['/History/Daily/0/MaxPvVoltage']:
                 self._dbusservice['/History/Daily/0/MaxPvVoltage'] = self._dbusservice['/Pv/V']
 
@@ -406,14 +409,50 @@ class MS4840(object):
             if self._dbusservice['/Dc/0/Voltage'] < self._dbusservice['/History/Overall/MinBatteryVoltage']:
                 self._dbusservice['/History/Overall/MinBatteryVoltage'] = self._dbusservice['/Dc/0/Voltage']
 
-            # do we have a new overall solar voltage
+            # do we have a new overall solar voltage - this is not storage on the ms4840n
             if self._dbusservice['/Pv/V'] > self._dbusservice['/History/Overall/MaxPvVoltage']:
                 self._dbusservice['/History/Overall/MaxPvVoltage'] = self._dbusservice['/Pv/V']
 
             # total power generation all time in WH
             self._dbusservice['/Yield/System'] = (self.solar_controller['total_power_generation'][1])
-            # any errors
-            self._dbusservice['/ErrorCode'] = (self.solar_controller["error_code"][0])
+            # any errors - https://www.victronenergy.com/live/mppt-error-codes
+            if self.solar_controller["alarm_info"][0] == 0: # no error
+                self._dbusservice['/ErrorCode'] = 0 # no error
+            elif self.solar_controller["alarm_info"][0] == 1: # battery over discharged
+                logger.info("battery is over discharged")
+                self._dbusservice['/ErrorCode'] = 0 # no error - victron doens't have this error
+            elif self.solar_controller["alarm_info"][0] == 2: # battery over voltage
+                logger.info("battery voltage is low")
+                self._dbusservice['/ErrorCode'] = 2 # battery voltage too high
+            elif self.solar_controller["alarm_info"][0] == 3: # load short circuit
+                logger.info("load short circuit - check rs484/temp cables")
+                self._dbusservice['/ErrorCode'] = 8 # battery voltage sense disconnected
+            elif self.solar_controller["alarm_info"][0] == 4: # load power too big or load open circuit
+                logger.info("load power too big or load open circuit")
+                self._dbusservice['/ErrorCode'] = 18 # controller over-current
+            elif self.solar_controller["alarm_info"][0] == 5: # controller temperature too high
+                logger.info("solar controller temerature is too high")
+                self._dbusservice['/ErrorCode'] = 22 # controller over-current
+            elif self.solar_controller["alarm_info"][0] == 6: # surrounding temperature too high
+                logger.info("surrounding temperature is too high")
+                self._dbusservice['/ErrorCode'] = 1 # battery temperature too high
+            elif self.solar_controller["alarm_info"][0] == 7: # input power too big (too high)
+                logger.info("input power too big")
+                self._dbusservice['/ErrorCode'] = 35 # pv over-power
+            elif self.solar_controller["alarm_info"][0] == 8: # input side short circuit
+                logger.info("input side short circuit")
+                self._dbusservice['/ErrorCode'] = 27 # charger short circuit
+            elif self.solar_controller["alarm_info"][0] == 9: # solar panel input over voltage
+                logger.info(f"solar panel input is over voltage {self._dbusservice['/Pv/V']}")
+                self._dbusservice['/ErrorCode'] = 33
+            elif self.solar_controller["alarm_info"][0] == 12: # solar panel reverse connectivity ('doh!)
+                logger.info("solar panel polarity is reversed")
+                self._dbusservice['/ErrorCode'] = 27 # charger short circuit
+            elif self.solar_controller["alarm_info"][0] == 13: # battery reverse connectivity ('doh!)
+                logger.info("battery polarity is reversed")
+                self._dbusservice['/ErrorCode'] = 27 # charger short circuit
+            else: # ignore everything else and or set to 0
+                self._dbusservice['/ErrorCode'] = 0 # battery high irpple current
 
         # increment UpdateIndex - to show that new data is available
         self.loop_index = self._dbusservice["/UpdateIndex"] + 1  # increment index
@@ -463,11 +502,4 @@ if __name__ == "__main__":
 
 """
 example of solar_controller dict
-{'sver': [121], 'hver': [100], 'system_info': [8224, 19795, 11572, 14388, 12366, 8224, 8224, 8224],
-'load_status': [2], 'current_system_voltage': [12], 'battery_power': [100], 'battery_voltage': [138],
-'solar_current': [426], 'solar_power': [58], 'temperatures': [8989], 'solar_voltage': [362], 'max_power_day': [248],
-'power_gen_day': [115], 'battery_type': [4], 'uptime': [51], 'total_power_generation': [0, 8460],
-'0dhist': [115, 0, 248, 145, 131], '1dhist': [21, 0, 28, 147, 132], '0hist': [115, 0, 248, 145, 131],
-'1hist': [21, 0, 28, 147, 132], '2hist': [58, 0, 93, 147, 112], '3hist': [139, 0, 209, 146, 132],
-'4hist': [276, 0, 119, 147, 129], '5hist': [68, 0, 56, 147, 132], '6hist': [202, 0, 117, 147, 132], ...
-"""
+DEBUG:ms4840:{'sver': [121], 'hver': [100], 'system_info': [8224, 19795, 11572, 14388, 12366, 8224, 8224, 8224], 'load_status': [4], 'current_system_voltage': [12], 'battery_power': [100], 'battery_voltage': [146], 'solar_current': [55], 'solar_power': [8], 'temperatures': [8737], 'solar_voltage': [417], 'max_power_day': [248], 'power_gen_day': [205], 'alarm_info': [0], 'battery_type': [4], 'uptime': [51], 'total_power_generation': [0, 8550], '0dhist': [205, 0, 248, 147, 131], '1dhist': [21, 0, 28, 147, 132], '0hist': [205, 0, 248, 147, 131], '1hist': [21, 0, 28, 147, 132], '2hist': [58, 0, 93, 147, 112], '3hist': [139, 0, 209, 146, 132], '4hist': [276, 0, 119, 147, 129], '5hist': [68, 0, 56, 147, 132], '6hist': [202, 0, 117, 147, 132], '7hist': [199, 0, 90, 147, 132], '8hist': [65, 0, 39, 145, 132], '9hist': [66, 0, 39, 145, 133], '10hist': [60, 0, 148, 144, 132], '11hist': [63, 0, 36, 145, 132], '12hist': [185, 0, 136, 145, 133], '13hist': [138, 0, 64, 135, 133], '14hist': [232, 0, 225, 144, 132], '15hist': [60, 0, 62, 135, 130], '16hist': [5, 0, 21, 133, 130], '17hist': [291, 0, 329, 145, 130], '18hist': [137, 0, 198, 145, 131], '19hist': [247, 0, 264, 144, 132], '20hist': [134, 0, 88, 147, 132], '21hist': [19, 0, 14, 135, 132], '22hist': [65, 0, 54, 136, 70], '23hist': [108, 0, 24, 135, 132], '24hist': [703, 0, 280, 138, 129], '25hist': [87, 0, 126, 145, 130], '26hist': [13, 0, 6, 145, 134], '27hist': [12, 0, 6, 145, 135], '28hist': [12, 0, 7, 145, 135], '29hist': [12, 0, 6, 145, 134]}"""
