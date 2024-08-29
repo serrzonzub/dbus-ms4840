@@ -47,8 +47,9 @@ from settingsdevice import (  # noqa: E402
     SettingsDevice,
 )
 
-# serial variables
+# serial variables (we probably want this from a config file at some point)
 baud_rate = 9600 # ms4840 doesn't speed any faster
+controller_address = 1 # the andress of the controller
 
 # general variables
 softwareversion = '0.8'
@@ -99,7 +100,10 @@ solar_charger_dict = {
     "/Pv/V": {"value": None, "textformat": _v},
     "/Pv/P": {"value": None, "textformat": _w},
     "/Pv/Name": {"value": None, "textformat": _s},
-    
+    "/Yield/Power": {"value": None, "textformat": _w},
+    "/Yield/User": {"value": None, "textformat": _wh},
+    "/Yield/System": {"value": None, "textformat": _wh},
+
     # if you have more than one mppt controller...
     #"/Pv/0/V": {"value": None, "textformat": _v},
     #"/Pv/1/V": {"value": None, "textformat": _v},
@@ -110,7 +114,6 @@ solar_charger_dict = {
     #"/Pv/2/P": {"value": None, "textformat": _w},
     #"/Pv/3/P": {"value": None, "textformat": _w},
 
-    "/Yield/Power": {"value": None, "textformat": _w},
     # external control
     "/Link/NetworkMode": {"value": None, "textformat": _s},
     "/Link/BatteryCurrent": {"value": None, "textformat": _a},
@@ -129,10 +132,10 @@ solar_charger_dict = {
     "/Dc/0/Current": {"value": None, "textformat": _a},
     "/Dc/0/Temperature": {"value": None, "textformat": _C},
     "/MppTemperature": {"value": None, "textformat": _C},
-    "/Yield/User": {"value": None, "textformat": _wh},
-    "/Yield/System": {"value": None, "textformat": _wh},
+    # the ms4840-n doesn't have capability to offer load
     "/Load/State": {"value": None, "textformat": _n},
     "/Load/I": {"value": None, "textformat": _a},
+    # errors/state/operating mode/relay
     "/ErrorCode": {"value": 0, "textformat": _n},
     "/State": {"value": 0, "textformat": _n},
     "/Mode": {"value": None, "textformat": _n},
@@ -145,9 +148,6 @@ solar_charger_dict = {
     "/Alarms/HighTemperature": {"value": None, "textformat": _n},
     "/Alarms/ShortCircuit": {"value": None, "textformat": _n},
     # history (daily is created dynamically below)
-    #"/History/Daily/0/Yield": {"value": 0, "textformat": _kwh},
-    #"/History/Daily/0/MaxPower": {"value": 0, "0": _w},
-    #"/History/Daily/0/MaxPvVoltage": {"value": None, "textformat": _w},
     "/History/Overall/DaysAvailable": {"value": history_days, "textformat": _n},
     "/History/Overall/MaxPvVoltage": {"value": 0.0, "textformat": _v},
     "/History/Overall/MaxBatteryVoltage": {"value": 0, "textformat": _v},
@@ -162,7 +162,7 @@ solar_charger_dict = {
 for day in range(history_days):
     solar_charger_dict.update(
         {
-            "/History/Daily/" + str(day) + "/Yield": {"value": 0, "textformat": _kwh},
+            "/History/Daily/" + str(day) + "/Yield": {"value": 0, "textformat": _wh},
             "/History/Daily/" + str(day) + "/MaxPower": {"value": 0, "textformat": _kwh},
             "/History/Daily/" + str(day) + "/MinVoltage": {"value": 0, "textformat": _v},
             # this isn't used?
@@ -174,10 +174,13 @@ for day in range(history_days):
         }
     )
 
-# we need to know what serialport / usb to connect to
+# we need to know what serialport / usb to connect to and we expect that from the command line
+#   as argument 1.
 if len(sys.argv) > 1:
-    controller = minimalmodbus.Instrument(sys.argv[1], 1)
-    servicename = 'com.victronenergy.solarcharger.' + sys.argv[1].split('/')[2]
+    controller_path = sys.argv[1] # /dev/ttyUSB1
+    controller_suffix = sys.argv[1].split('/')[2] # ttyUSB
+    controller = minimalmodbus.Instrument(controller_path, controller_address)
+    servicename = 'com.victronenergy.solarcharger.' + controller_suffix
 else:
     logger.info(f"no port given. bye.")
     sys.exit()
@@ -267,10 +270,10 @@ class MS4840(object):
 
         # setup default values for various paths
         self._dbusservice['/NrOfTrackers'] = total_trackers
-        self._dbusservice['/Load/State'] = 0
-        self._dbusservice['/Load/I'] = 0
+        self._dbusservice['/Load/State'] = 0 # on the ms4840n this is always 0 since there is no load capability
+        self._dbusservice['/Load/I'] = 0 # on the ms4840n this is always 0 since there is no load capability
 
-        # register the update function for the dbus paths
+        # register the update function for the dbus paths every second
         GLib.timeout_add(1000, self._update)
 
     def _update_once(self):
@@ -295,10 +298,13 @@ class MS4840(object):
             # return it the stripped string ("MS-4840N")
             return res.strip()
 
-        # translate the ms4840 mptt state to victron's state
+        # translate the ms4840 mptt state to victron's state (i think/hope)
+        #    - not sure the s_curr values reflect true state, i'm sure it's more complicated
         def _calculate_state(status, s_curr, b_volt):
             if status == 0: # we are off, due to darkness?
                 return 0 # off
+            elif status == 1: # open charge mode
+                return 2 # fault, although this isn't quite accurate
             elif status == 2: # mppt reports mptt
                 # calculate which mode we are in based on solar current (amps)?
                 if s_curr > 10:
@@ -314,9 +320,9 @@ class MS4840(object):
                 return 3 # boost and bulk are the same?
             elif status == 5: # mptt reports float
                 return 5 # float
-            elif status == 6: # mpttp reports current ower power or over temperature
+            elif status == 6: # mpttp reports current over power or over temperature
                 return 2 # fault
-            else:
+            else: # shouldn't get here
                 return 3 # default to equalizing charge?
 
         # go get the data from the solar controller (mppt)
@@ -370,7 +376,7 @@ class MS4840(object):
 
             self._dbusservice['/Pv/V'] = (self.solar_controller["solar_voltage"][0] / 10)
             self._dbusservice['/Pv/P'] = (self.solar_controller["solar_power"][0])
-            self._dbusservice['/Yield/Power'] = (self.solar_controller["solar_power"][0]) # in Wh (System yiild in GUI)
+            self._dbusservice['/Yield/Power'] = (self.solar_controller["solar_power"][0]) # in Wh (System yield in GUI)
             self._dbusservice['/Yield/User'] = (self.solar_controller["power_gen_day"][0]) # in Wh (Total yield in GUI)
 
             self._dbusservice['/History/Overall/DaysAvailable'] = (self.solar_controller["uptime"][0])
@@ -383,14 +389,13 @@ class MS4840(object):
                                      self.solar_controller["battery_voltage"][0] / 10)
             self._dbusservice['/State'] = state
 
-            #for day in range(int(self.solar_controller['uptime"][0])):
             # it costs us very little to update the same variables in memory (this isn't low latency programming)
             # 0dhist': [115, 0, 248, 145, 131] charge Wh/today, load today, max power gen todat (watt), max battery, min battery
             for day in range(int(history_days)):
                 history_key = str(day) + "hist"
 
                 # this are all stored on device
-                self._dbusservice[f"/History/Daily/{day}/Yield"] = (self.solar_controller[history_key][0] / 1000)
+                self._dbusservice[f"/History/Daily/{day}/Yield"] = (self.solar_controller[history_key][0] / 1000) # labeled as kWh in GUI, ms4840 reports WH
                 self._dbusservice[f"/History/Daily/{day}/MaxPower"] = (self.solar_controller[history_key][2])
                 self._dbusservice[f"/History/Daily/{day}/MaxBatteryVoltage"] = ((self.solar_controller[history_key][3]) / 10)
                 self._dbusservice[f"/History/Daily/{day}/MinBatteryVoltage"] = ((self.solar_controller[history_key][4]) / 10)
@@ -466,6 +471,7 @@ class MS4840(object):
             elapsed_time = (time.process_time() - start_time)
             logger.debug("spent %f in _update" % (elapsed_time))
             logger.debug(f'{self.solar_controller}')
+
         # and we're done
         return True
 
