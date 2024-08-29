@@ -204,7 +204,7 @@ class MS4840(object):
     def __init__(self, paths):
         print(f"trying to register '{servicename}' on the dbus")
         res = self._dbusservice = VeDbusService(servicename, register=False)
-        
+
         self._paths = paths
         self.got_history = False
         self.loop_index = 0
@@ -214,7 +214,7 @@ class MS4840(object):
             "sver": {"reg": 20, "len": 1}, # 0x0014h\
             "hver": {"reg": 21, "len": 1}, # 0x0015h\
             "system_info": {"reg": 12, "len": 8}, # 0x000Ch\
-            
+
             "load_status": {"reg": 269, "len": 1}, # 0x010Dh\
             "current_system_voltage": {"reg": 256, "len": 1}, # 0x0100h
             "battery_power": {"reg": 257, "len": 1}, # 0x0101h
@@ -285,7 +285,7 @@ class MS4840(object):
     def _handlechangedvalue(self, path, value):
         logger.debug("someone else updated %s to %s" % (path, value))
         return True  # accept the change
-  
+
     def _update(self):
         global exceptionCounter
         start_time = time.process_time()
@@ -347,7 +347,7 @@ class MS4840(object):
                 # only get the history records every 30 seconds to reduce traffic since they won't change as fast
                 if ((self.loop_index % 30) != 0 and "hist" in pdu_name):
                     continue
-                
+
                 #print(f"trying to read reg: {reg} - name: {pdu_name}")
                 pdu_value = controller.read_registers(reg, reg_len, 3)
                 self.solar_controller[pdu_name] = pdu_value
@@ -385,7 +385,7 @@ class MS4840(object):
             self._dbusservice['/History/Overall/DaysAvailable'] = (self.solar_controller["uptime"][0])
             self._dbusservice['/History/Daily/0/Yield'] = (self.solar_controller["power_gen_day"][0] / 1000) # in watts
             self._dbusservice['/History/Daily/0/MaxPower'] = (self.solar_controller["max_power_day"][0]) # in watts
-            
+
             # state is the current method the battery is being charged (bulk, absortion, float)
             state = _calculate_state(self.solar_controller["load_status"][0],\
                                      self.solar_controller["solar_current"][0] * 0.01,\
@@ -467,8 +467,8 @@ class MS4840(object):
         if self.loop_index > 255:  # maximum value of the index
             self.loop_index = 0  # overflow from 255 to 0
         self._dbusservice["/UpdateIndex"] = self.loop_index
-        
-        
+
+
         # calculate the elapsed time if debugging is enabled
         if debugging == True:
             elapsed_time = (time.process_time() - start_time)
@@ -511,4 +511,5 @@ if __name__ == "__main__":
 
 """
 example of solar_controller dict
-DEBUG:ms4840:{'sver': [121], 'hver': [100], 'system_info': [8224, 19795, 11572, 14388, 12366, 8224, 8224, 8224], 'load_status': [4], 'current_system_voltage': [12], 'battery_power': [100], 'battery_voltage': [146], 'solar_current': [55], 'solar_power': [8], 'temperatures': [8737], 'solar_voltage': [417], 'max_power_day': [248], 'power_gen_day': [205], 'alarm_info': [0], 'battery_type': [4], 'uptime': [51], 'total_power_generation': [0, 8550], '0dhist': [205, 0, 248, 147, 131], '1dhist': [21, 0, 28, 147, 132], '0hist': [205, 0, 248, 147, 131], '1hist': [21, 0, 28, 147, 132], '2hist': [58, 0, 93, 147, 112], '3hist': [139, 0, 209, 146, 132], '4hist': [276, 0, 119, 147, 129], '5hist': [68, 0, 56, 147, 132], '6hist': [202, 0, 117, 147, 132], '7hist': [199, 0, 90, 147, 132], '8hist': [65, 0, 39, 145, 132], '9hist': [66, 0, 39, 145, 133], '10hist': [60, 0, 148, 144, 132], '11hist': [63, 0, 36, 145, 132], '12hist': [185, 0, 136, 145, 133], '13hist': [138, 0, 64, 135, 133], '14hist': [232, 0, 225, 144, 132], '15hist': [60, 0, 62, 135, 130], '16hist': [5, 0, 21, 133, 130], '17hist': [291, 0, 329, 145, 130], '18hist': [137, 0, 198, 145, 131], '19hist': [247, 0, 264, 144, 132], '20hist': [134, 0, 88, 147, 132], '21hist': [19, 0, 14, 135, 132], '22hist': [65, 0, 54, 136, 70], '23hist': [108, 0, 24, 135, 132], '24hist': [703, 0, 280, 138, 129], '25hist': [87, 0, 126, 145, 130], '26hist': [13, 0, 6, 145, 134], '27hist': [12, 0, 6, 145, 135], '28hist': [12, 0, 7, 145, 135], '29hist': [12, 0, 6, 145, 134]}"""
+DEBUG:ms4840:{'sver': [121], 'hver': [100], 'system_info': [8224, 19795, 11572, 14388, 12366, 8224, 8224, 8224], 'load_status': [4], 'current_system_voltage': [12], 'battery_power': [100], 'battery_voltage': [146], 'solar_current': [55], 'solar_power': [8], 'temperatures': [8737], 'solar_voltage': [417], 'max_power_day': [248], 'power_gen_day': [205], 'alarm_info': [0], 'battery_type': [4], 'uptime': [51], 'total_power_generation': [0, 8550], '0dhist': [205, 0, 248, 147, 131], '1dhist': [21, 0, 28, 147, 132], '0hist': [205, 0, 248, 147, 131], '1hist': [21, 0, 28, 147, 132], '2hist': [58, 0, 93, 147, 112], '3hist': [139, 0, 209, 146, 132], '4hist': [276, 0, 119, 147, 129], '5hist': [68, 0, 56, 147, 132], '6hist': [202, 0, 117, 147, 132], '7hist': [199, 0, 90, 147, 132], '8hist': [65, 0, 39, 145, 132], '9hist': [66, 0, 39, 145, 133], '10hist': [60, 0, 148, 144, 132], '11hist': [63, 0, 36, 145, 132], '12hist': [185, 0, 136, 145, 133], '13hist': [138, 0, 64, 135, 133], '14hist': [232, 0, 225, 144, 132], '15hist': [60, 0, 62, 135, 130], '16hist': [5, 0, 21, 133, 130], '17hist': [291, 0, 329, 145, 130], '18hist': [137, 0, 198, 145, 131], '19hist': [247, 0, 264, 144, 132], '20hist': [134, 0, 88, 147, 132], '21hist': [19, 0, 14, 135, 132], '22hist': [65, 0, 54, 136, 70], '23hist': [108, 0, 24, 135, 132], '24hist': [703, 0, 280, 138, 129], '25hist': [87, 0, 126, 145, 130], '26hist': [13, 0, 6, 145, 134], '27hist': [12, 0, 6, 145, 135], '28hist': [12, 0, 7, 145, 135], '29hist': [12, 0, 6, 145, 134]}
+"""

@@ -2,6 +2,8 @@ this is for reading via minimodbus a helios ms4840 or bougerv mppt controller an
 
 this is a very basic version and i have no idea if i'm doing it all correctly.
 
+this driver is (mostly) meant to record and report data, it isn't meant to controller your system.
+** use at your own risk **
 
 
 left image is the port on the mppt controller; right image is the RJ12 connector on the cable
