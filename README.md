@@ -4,7 +4,7 @@ this is a very basic version and i have no idea if i'm doing it all correctly.
 
 
 
-left image is the port on the device; right is the RJ12 connect on the cable
+left image is the port on the mppt controller; right image is the RJ12 connector on the cable
 ![image](https://github.com/user-attachments/assets/52a5bc37-1c00-434b-8dbb-41885b793b71)
 
 
