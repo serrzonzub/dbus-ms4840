@@ -1,5 +1,8 @@
 #!/usr/bin/python
 
+# this driver is (mostly) meant to record and report data, it isn't meant to controller your system
+# use at your own risk
+
 # dbus paths according to victron
 # https://github.com/victronenergy/venus/wiki/dbus
 
