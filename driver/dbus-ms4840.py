@@ -26,6 +26,7 @@ from asyncio import exceptions
 import serial
 import minimalmodbus
 import time
+import datetime
 import dbus
 from dbus.mainloop.glib import DBusGMainLoop
 from dbus.exceptions import (DBusException, UnknownMethodException)
@@ -68,33 +69,33 @@ history_days = 30 # number of days to get history for, if available
 total_trackers = 1 # number of mppt devices
 
 # formatting
-def _a(p, v):
+def _a(p, v): # amps
     return str("%.1f" % v) + "A"
 
 
-def _n(p, v):
+def _n(p, v): # number
     return str("%i" % v)
 
 
-def _s(p, v):
+def _s(p, v): # string
     return str("%s" % v)
 
 
-def _v(p, v):
+def _v(p, v): # voltage
     return str("%.2f" % v) + "V"
 
 
-def _w(p, v):
+def _w(p, v): # watts
     return str("%i" % v) + "W"
 
 
-def _kwh(p, v):
+def _kwh(p, v): # kilowatt hours
     return str("%i" % v) + "kWh"
 
-def _wh(p, v):
+def _wh(p, v): # watt hours
     return str("%i" % v) + "Wh"
 
-def _C(p, v):
+def _C(p, v): # celcius
     return str("%i" % v) + "°C"
 
 solar_charger_dict = {
@@ -163,17 +164,25 @@ solar_charger_dict = {
 
 # add in history paths to the dictionary
 for day in range(history_days):
+    # convert day to a string once
+    s_day = str(day)
+
     solar_charger_dict.update(
         {
-            "/History/Daily/" + str(day) + "/Yield": {"value": 0, "textformat": _wh},
-            "/History/Daily/" + str(day) + "/MaxPower": {"value": 0, "textformat": _kwh},
-            "/History/Daily/" + str(day) + "/MinVoltage": {"value": 0, "textformat": _v},
+            "/History/Daily/" + s_day + "/Yield": {"value": 0, "textformat": _wh},
+            "/History/Daily/" + s_day + "/MaxPower": {"value": 0, "textformat": _kwh},
+            "/History/Daily/" + s_day + "/MinVoltage": {"value": 0, "textformat": _v},
             # this isn't used?
-            #"/History/Daily/" + str(day) + "/MaxVoltage": {"value": None, "textformat": _v},
-            "/History/Daily/" + str(day) + "/MaxPvVoltage": {"value": 0, "textformat": _v},
-            "/History/Daily/" + str(day) + "/MinBatteryVoltage": {"value": 0, "textformat": _v},
-            "/History/Daily/" + str(day) + "/MaxBatteryVoltage": {"value": 0, "textformat": _v},
-            "/History/Daily/" + str(day) + "/MaxBatteryCurrent": {"value": 0, "textformat": _a}
+            #"/History/Daily/" + s_day + "/MaxVoltage": {"value": None, "textformat": _v},
+            "/History/Daily/" + s_day + "/MaxPvVoltage": {"value": 0, "textformat": _v},
+            "/History/Daily/" + s_day + "/MinBatteryVoltage": {"value": 0, "textformat": _v},
+            "/History/Daily/" + s_day + "/MaxBatteryVoltage": {"value": 0, "textformat": _v},
+            "/History/Daily/" + s_day + "/MaxBatteryCurrent": {"value": 0, "textformat": _a},
+
+            # for recording duration of different charge states
+            "/History/Daily/" + s_day + "/TimeInBulk": {"value": 0, "textformat": _n},
+            "/History/Daily/" + s_day + "/TimeInAbsorption": {"value": 0, "textformat": _n},
+            "/History/Daily/" + s_day + "/TimeInFloat": {"value": 0, "textformat": _n},
         }
     )
 
@@ -210,6 +219,11 @@ class MS4840(object):
         self.loop_index = 0
         self.solar_controller = {}
         self.solar_controller_history = {}
+        self.solar_controller_chargetime = {
+            "bulk": 0, # total bulk charge time
+            "abs": 0, # total absorbtion charge time
+            "float": 0 # total float charge time
+        }
         self.pdu_addresses = {\
             "sver": {"reg": 20, "len": 1}, # 0x0014h\
             "hver": {"reg": 21, "len": 1}, # 0x0015h\
@@ -423,6 +437,7 @@ class MS4840(object):
 
             # total power generation all time in WH
             self._dbusservice['/Yield/System'] = (self.solar_controller['total_power_generation'][1])
+
             # any errors - https://www.victronenergy.com/live/mppt-error-codes
             if self.solar_controller["alarm_info"][0] == 0: # no error
                 self._dbusservice['/ErrorCode'] = 0 # no error
@@ -468,6 +483,24 @@ class MS4840(object):
             self.loop_index = 0  # overflow from 255 to 0
         self._dbusservice["/UpdateIndex"] = self.loop_index
 
+        # we need to store today's values in the history for the next day
+        # get the current time
+        now = datetime.datetime.now()
+        # calculate the time until midnight
+        midnight = datetime.datetime(now.year, now.month, now.day) + datetime.timedelta(days=1)
+        time_until_midnight = midnight - now
+        # extract hours and minutes
+        hours, seconds = divmod(time_until_midnight.seconds, 3600)
+        minutes = seconds // 60
+        # midnight! (or close to it in case we miss the exact midnight hour)
+        if hours == 0 and minutes == 0 and (seconds >= 0 or seconds <= 2):
+            for day in range(int(history_days)):
+                if day <= 0: # skip today
+                    continue
+                history_key = str(day) + "hist"
+                prev_day = (day - 1)
+                self._dbusservice[f'/History/Daily/{day}/MaxPvVoltage'] = self._dbusservice[f'/History/Daily/{prev_day}/MaxPvVoltage']
+                self._dbusservice[f'/History/Daily/{day}/MaxBatteryCurrent'] = self._dbusservice[f'/History/Daily/{prev_day}/MaxBatteryCurrent']
 
         # calculate the elapsed time if debugging is enabled
         if debugging == True:
