@@ -32,6 +32,7 @@ from dbus.mainloop.glib import DBusGMainLoop
 from dbus.exceptions import (DBusException, UnknownMethodException)
 from gi.repository import GLib
 import os
+import signal
 import sys
 import platform
 import argparse
@@ -56,14 +57,14 @@ baud_rate = 9600 # ms4840 doesn't speed any faster
 controller_address = 1 # the andress of the controller
 
 # general variables
-softwareversion = '0.8'
+softwareversion = '0.9'
 serialnumber = '0000000000000000'
 productname='ms4840'
 hardwareversion = '00.00'
 firmwareversion = '00.00'
 connection = 'USB'
 servicename = 'com.victronenergy.solarcharger.tty'
-deviceinstance = 290    #VRM instanze
+deviceinstance = 290    # VRM instanze
 exceptionCounter = 0
 history_days = 30 # number of days to get history for, if available
 total_trackers = 1 # number of mppt devices
@@ -293,13 +294,35 @@ class MS4840(object):
         # register the update function for the dbus paths every second
         GLib.timeout_add(1000, self._update)
 
-    def _update_once(self):
+    # used to update values from the mppt controller on boot
+    def _update_on_boot(self):
         pass
 
     def _handlechangedvalue(self, path, value):
         logger.debug("someone else updated %s to %s" % (path, value))
         return True  # accept the change
 
+    # if we need to update the history do it here
+    def _update_history(self, h = 0, m = 0, s = 0):
+        # move the history pv values from day X to day X-1
+        for day in range(int(history_days)):
+            if day <= 0: # skip today
+                continue
+            prev_day = (day - 1)
+            
+            # update the local list with the new values
+            history_key = str(prev_day) + "hist"
+            self._dbusservice[f"/History/Daily/{day}/Yield"] = (self.solar_controller[history_key][0] / 1000) # labeled as kWh in GUI, ms4840 reports WH
+            self._dbusservice[f"/History/Daily/{day}/MaxPower"] = self.solar_controller[history_key][2]
+            self._dbusservice[f"/History/Daily/{day}/MaxBatteryVoltage"] = (self.solar_controller[history_key][3] / 10)
+            self._dbusservice[f"/History/Daily/{day}/MinBatteryVoltage"] = (self.solar_controller[history_key][4] / 10)
+            
+            # and these values are only stored on the mptt - day0 is set as part of _update
+            self._dbusservice[f'/History/Daily/{day}/MaxPvVoltage'] = self._dbusservice[f'/History/Daily/{prev_day}/MaxPvVoltage']
+            self._dbusservice[f'/History/Daily/{day}/MaxBatteryCurrent'] = self._dbusservice[f'/History/Daily/{prev_day}/MaxBatteryCurrent']
+        logger.info(f'midnight - updating history@{h}:{m}:{s}, uptime: {self.solar_controller["uptime"][0]}')
+    
+    # this is where the bulk of the work is done to read values and update the data
     def _update(self):
         global exceptionCounter
         start_time = time.process_time()
@@ -342,6 +365,19 @@ class MS4840(object):
             else: # shouldn't get here
                 return 3 # default to equalizing charge?
 
+        def _calculate_midnight():
+            # we need to store today's values in the history for the next day
+            # get the current time
+            now = datetime.datetime.now()
+            # calculate the time until midnight
+            midnight = datetime.datetime(now.year, now.month, now.day) + datetime.timedelta(days=1)
+            time_until_midnight = midnight - now
+            # extract hours and minutes
+            hours, seconds = divmod(time_until_midnight.seconds, 3600)
+            minutes = seconds // 60
+
+            return hours, minutes, seconds
+        
         # go get the data from the solar controller (mppt)
         #    everything returns as a list
         try:
@@ -358,8 +394,13 @@ class MS4840(object):
                 if self.loop_index != 0 and "system_info" in pdu_name:
                     continue
 
-                # only get the history records every 30 seconds to reduce traffic since they won't change as fast
-                if ((self.loop_index % 30) != 0 and "hist" in pdu_name):
+                # only get these records every X interval to reduce serial
+                #    traffic since they won't change fast if at all
+                if ((self.loop_index % 60) != 0) and "hist" in pdu_name:
+                    continue
+                elif ((self.loop_index % 90) != 0) and "ver" in pdu_name:
+                    continue
+                elif ((self.loop_index % 90) != 0) and "system_info" in pdu_name:
                     continue
 
                 #print(f"trying to read reg: {reg} - name: {pdu_name}")
@@ -411,7 +452,7 @@ class MS4840(object):
             for day in range(int(history_days)):
                 history_key = str(day) + "hist"
 
-                # this are all stored on device
+                # these are all stored on the mppt
                 self._dbusservice[f"/History/Daily/{day}/Yield"] = (self.solar_controller[history_key][0] / 1000) # labeled as kWh in GUI, ms4840 reports WH
                 self._dbusservice[f"/History/Daily/{day}/MaxPower"] = (self.solar_controller[history_key][2])
                 self._dbusservice[f"/History/Daily/{day}/MaxBatteryVoltage"] = ((self.solar_controller[history_key][3]) / 10)
@@ -420,10 +461,12 @@ class MS4840(object):
             # if we have a new maximum battery current, reflect it today - this is not stored on the ms4840n
             if self._dbusservice['/Dc/0/Current'] > self._dbusservice['/History/Daily/0/MaxBatteryCurrent']:
                 self._dbusservice['/History/Daily/0/MaxBatteryCurrent'] = self._dbusservice['/Dc/0/Current']
+                self.solar_controller['MaxBatteryCurrent'] = self._dbusservice['/Dc/0/Current']
 
             # if we have a new maximum solar voltage, reflect it today - this is not stored on the ms4840n
             if self._dbusservice['/Pv/V'] > self._dbusservice['/History/Daily/0/MaxPvVoltage']:
                 self._dbusservice['/History/Daily/0/MaxPvVoltage'] = self._dbusservice['/Pv/V']
+                self.solar_controller['MaxPvVoltage'] = self._dbusservice['/Pv/V']
 
             # do we have a new min/max overall battery voltage
             if self._dbusservice['/Dc/0/Voltage'] > self._dbusservice['/History/Overall/MaxBatteryVoltage']:
@@ -477,30 +520,16 @@ class MS4840(object):
             else: # ignore everything else and or set to 0
                 self._dbusservice['/ErrorCode'] = 0 # battery high irpple current
 
+        # midnight! (or close to it in case we miss the exact midnight hour)
+        hours, minutes, seconds = _calculate_midnight()
+        if hours == 0 and minutes == 0 and (seconds >= 0 or seconds <= 2):
+            self._update_history(hours, minutes, seconds)
+
         # increment UpdateIndex - to show that new data is available
         self.loop_index = self._dbusservice["/UpdateIndex"] + 1  # increment index
         if self.loop_index > 255:  # maximum value of the index
             self.loop_index = 0  # overflow from 255 to 0
         self._dbusservice["/UpdateIndex"] = self.loop_index
-
-        # we need to store today's values in the history for the next day
-        # get the current time
-        now = datetime.datetime.now()
-        # calculate the time until midnight
-        midnight = datetime.datetime(now.year, now.month, now.day) + datetime.timedelta(days=1)
-        time_until_midnight = midnight - now
-        # extract hours and minutes
-        hours, seconds = divmod(time_until_midnight.seconds, 3600)
-        minutes = seconds // 60
-        # midnight! (or close to it in case we miss the exact midnight hour)
-        if hours == 0 and minutes == 0 and (seconds >= 0 or seconds <= 2):
-            for day in range(int(history_days)):
-                if day <= 0: # skip today
-                    continue
-                history_key = str(day) + "hist"
-                prev_day = (day - 1)
-                self._dbusservice[f'/History/Daily/{day}/MaxPvVoltage'] = self._dbusservice[f'/History/Daily/{prev_day}/MaxPvVoltage']
-                self._dbusservice[f'/History/Daily/{day}/MaxBatteryCurrent'] = self._dbusservice[f'/History/Daily/{prev_day}/MaxBatteryCurrent']
 
         # calculate the elapsed time if debugging is enabled
         if debugging == True:
@@ -514,6 +543,20 @@ class MS4840(object):
 def main():
     global servicename
     global debugging
+
+    # gratuitously copied from mrmanual
+    def handle_exit_signal(sig, frame, code: int = 0):
+        logger.info("Exit signal received, exiting gracefully...")
+        if "mainloop" in globals() and mainloop is not None:
+            mainloop.quit()
+        
+        # and we're out
+        logger.info(f"stopped dbus-ms4840: exit code: {code}")
+        sys.exit(code)
+
+    # register the signal handler(s)
+    signal.signal(signal.SIGINT, handle_exit_signal)
+    signal.signal(signal.SIGTERM, handle_exit_signal)
 
     from dbus.mainloop.glib import DBusGMainLoop
     # Have a mainloop, so we can send/receive asynchronous calls to and from dbus
@@ -535,14 +578,32 @@ def main():
     # and off to the races we go
     logger.info('Connected to dbus, and switching over to GLib.MainLoop() (= event based)')
     mainloop = GLib.MainLoop()
-    mainloop.run()
+    try:
+        mainloop.run()
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
+    debugging = True
     main()
 
 
 """
 example of solar_controller dict
-DEBUG:ms4840:{'sver': [121], 'hver': [100], 'system_info': [8224, 19795, 11572, 14388, 12366, 8224, 8224, 8224], 'load_status': [4], 'current_system_voltage': [12], 'battery_power': [100], 'battery_voltage': [146], 'solar_current': [55], 'solar_power': [8], 'temperatures': [8737], 'solar_voltage': [417], 'max_power_day': [248], 'power_gen_day': [205], 'alarm_info': [0], 'battery_type': [4], 'uptime': [51], 'total_power_generation': [0, 8550], '0dhist': [205, 0, 248, 147, 131], '1dhist': [21, 0, 28, 147, 132], '0hist': [205, 0, 248, 147, 131], '1hist': [21, 0, 28, 147, 132], '2hist': [58, 0, 93, 147, 112], '3hist': [139, 0, 209, 146, 132], '4hist': [276, 0, 119, 147, 129], '5hist': [68, 0, 56, 147, 132], '6hist': [202, 0, 117, 147, 132], '7hist': [199, 0, 90, 147, 132], '8hist': [65, 0, 39, 145, 132], '9hist': [66, 0, 39, 145, 133], '10hist': [60, 0, 148, 144, 132], '11hist': [63, 0, 36, 145, 132], '12hist': [185, 0, 136, 145, 133], '13hist': [138, 0, 64, 135, 133], '14hist': [232, 0, 225, 144, 132], '15hist': [60, 0, 62, 135, 130], '16hist': [5, 0, 21, 133, 130], '17hist': [291, 0, 329, 145, 130], '18hist': [137, 0, 198, 145, 131], '19hist': [247, 0, 264, 144, 132], '20hist': [134, 0, 88, 147, 132], '21hist': [19, 0, 14, 135, 132], '22hist': [65, 0, 54, 136, 70], '23hist': [108, 0, 24, 135, 132], '24hist': [703, 0, 280, 138, 129], '25hist': [87, 0, 126, 145, 130], '26hist': [13, 0, 6, 145, 134], '27hist': [12, 0, 6, 145, 135], '28hist': [12, 0, 7, 145, 135], '29hist': [12, 0, 6, 145, 134]}
+DEBUG:ms4840:{'sver': [121], 'hver': [100], 'system_info': [8224, 19795, 11572, 14388, 12366, 8224, 8224, 8224], 
+              'load_status': [4], 'current_system_voltage': [12], 'battery_power': [100], 'battery_voltage': [146],
+              'solar_current': [55], 'solar_power': [8], 'temperatures': [8737], 'solar_voltage': [417],
+              'max_power_day': [248], 'power_gen_day': [205], 'alarm_info': [0], 'battery_type': [4], 'uptime': [51],
+              'total_power_generation': [0, 8550], '0dhist': [205, 0, 248, 147, 131], '1dhist': [21, 0, 28, 147, 132],
+              '0hist': [205, 0, 248, 147, 131], '1hist': [21, 0, 28, 147, 132], '2hist': [58, 0, 93, 147, 112],
+              '3hist': [139, 0, 209, 146, 132], '4hist': [276, 0, 119, 147, 129], '5hist': [68, 0, 56, 147, 132],
+              '6hist': [202, 0, 117, 147, 132], '7hist': [199, 0, 90, 147, 132], '8hist': [65, 0, 39, 145, 132],
+              '9hist': [66, 0, 39, 145, 133], '10hist': [60, 0, 148, 144, 132], '11hist': [63, 0, 36, 145, 132],
+              '12hist': [185, 0, 136, 145, 133], '13hist': [138, 0, 64, 135, 133], '14hist': [232, 0, 225, 144, 132],
+              '15hist': [60, 0, 62, 135, 130], '16hist': [5, 0, 21, 133, 130], '17hist': [291, 0, 329, 145, 130],
+              '18hist': [137, 0, 198, 145, 131], '19hist': [247, 0, 264, 144, 132], '20hist': [134, 0, 88, 147, 132],
+              '21hist': [19, 0, 14, 135, 132], '22hist': [65, 0, 54, 136, 70], '23hist': [108, 0, 24, 135, 132],
+              '24hist': [703, 0, 280, 138, 129], '25hist': [87, 0, 126, 145, 130], '26hist': [13, 0, 6, 145, 134],
+              '27hist': [12, 0, 6, 145, 135], '28hist': [12, 0, 7, 145, 135], '29hist': [12, 0, 6, 145, 134]}
 """

@@ -37,10 +37,10 @@ class DbusHelper:
         # fail, if the file is already locked
         except OSError:
             logger.error(
-                "** DRIVER STOPPED! Another battery with the same serial number/unique identifier "
+                "** DRIVER STOPPED! Another mppt controller with the same serial number/unique identifier "
                 + f'"{self.battery.unique_identifier()}" found! **'
             )
-            logger.error("Please check that the batteries have unique identifiers.")
+            logger.error("Please check that the mppt controllers have unique identifiers.")
 
             self.pid_file.close()
             sleep(60)
