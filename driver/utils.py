@@ -32,3 +32,4 @@ else:
     fhandler = logging.FileHandler('/data/log/dbus-ms4840/debug.log')
     fhandler.setLevel(logging.DEBUG)
     logger.addHandler(fhandler)
+    

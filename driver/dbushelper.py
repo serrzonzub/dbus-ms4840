@@ -38,7 +38,7 @@ class DbusHelper:
         except OSError:
             logger.error(
                 "** DRIVER STOPPED! Another mppt controller with the same serial number/unique identifier "
-                + f'"{self.battery.unique_identifier()}" found! **'
+                + f' found! **'
             )
             logger.error("Please check that the mppt controllers have unique identifiers.")
 
@@ -59,3 +59,4 @@ class DbusHelper:
         # os.fsync(self.pid_file.fileno())
 
         logger.info(f"PID ({os.getpid()}) file created successfully: {pid_file_path}")
+        
