@@ -226,24 +226,28 @@ class MS4840(object):
             "float": 0 # total float charge time
         }
         self.pdu_addresses = {\
-            "sver": {"reg": 20, "len": 1}, # 0x0014h\
-            "hver": {"reg": 21, "len": 1}, # 0x0015h\
-            "system_info": {"reg": 12, "len": 8}, # 0x000Ch\
-
-            "load_status": {"reg": 269, "len": 1}, # 0x010Dh\
-            "current_system_voltage": {"reg": 256, "len": 1}, # 0x0100h
-            "battery_power": {"reg": 257, "len": 1}, # 0x0101h
-            "battery_voltage": {"reg": 258, "len": 1}, # 0x0102h
-            "solar_current": {"reg": 259, "len": 1}, # 0x0103h - charging current flowing into the battery in amps
-            "solar_power": {"reg": 260, "len": 1}, # 0x0104h - doc says amps, but i think it's watts
+            "sver": {"reg": 20, "len": 1}, # 0x0014h
+            "hver": {"reg": 21, "len": 1}, # 0x0015h
+            "system_info": {"reg": 12, "len": 8}, # 0x000Ch
+            "current_system_voltage": {"reg": 256, "len": 1}, # 0x0100h          
+            "battery_power": {"reg": 257, "len": 1}, # 0x0101h, in %
+            "battery_voltage": {"reg": 258, "len": 1}, # 0x0102h, *0.1
+            "solar_current": {"reg": 259, "len": 1}, # 0x0103h - charging current flowing into the battery in amps, *0.1
+            "solar_power": {"reg": 260, "len": 1}, # 0x0104h - charging power, doc says amps, but i think it's watts
             "temperatures": {"reg": 261, "len": 1}, # 0x0105h
-            "solar_voltage": {"reg": 265, "len": 1}, # 0x0109h
-            "max_power_day": {"reg": 266, "len": 1}, # 0x010Ah
-            "power_gen_day": {"reg": 267, "len": 1}, # 0x010Bh
+            "solar_voltage": {"reg": 265, "len": 1}, # 0x0109h, *0.1
+            "max_power_day": {"reg": 266, "len": 1}, # 0x010Ah, in W
+            "power_gen_day": {"reg": 267, "len": 1}, # 0x010Bh, in WH
+            "elec_cons_day": {"reg": 268, "len": 1}, # 0x010Bh, electrical consumption for the day, in WH
+            "load_status": {"reg": 269, "len": 1}, # 0x010Dh
             "alarm_info": {"reg": 270, "len": 1}, # 0x010Eh
-            "battery_type": {"reg": 515, "len": 1}, # 0x0202h
-            "uptime": {"reg": 271, "len": 1}, # 0x010fh
+            "uptime": {"reg": 271, "len": 1}, # 0x010fh # days running, in days
             "total_power_generation": {"reg": 272, "len": 2}, # 0x0110-0x0111h, also total yield?
+            "total_power_consumption": {"reg": 274, "len": 2}, # 0x0110-0x0111h, also total yield?
+            "system_voltage": {"reg": 514, "len": 1}, # 0x0202h
+            "battery_type": {"reg": 515, "len": 1}, # 0x0203h
+            "equalize_charge_time": {"reg": 523, "len": 1}, # 0x20bh, minutes
+            "boost_charge_time": {"reg": 524, "len": 1}, # 0x20bh, minutes
             "0dhist": {"reg": 1024, "len": 5}, # 0x0400h
             "1dhist": {"reg": 1025, "len": 5} # 0x0400h
         }
@@ -430,7 +434,7 @@ class MS4840(object):
             self._dbusservice['/Dc/0/Voltage'] = (self.solar_controller["battery_voltage"][0] / 10 )
             self._dbusservice['/Dc/0/Current'] = (self.solar_controller["solar_current"][0] * 0.01)
             self._dbusservice['/Dc/0/Temperature'] = (self.solar_controller["temperatures"][0] >> 0 & 0xff) # <-- lower 8 bits
-            self._dbusservice['/MppTemperature'] = (self.solar_controller["temperatures"][0] >> 8 & 0xff) # <-- lower 8 bits
+            self._dbusservice['/MppTemperature'] = (self.solar_controller["temperatures"][0] >> 8 & 0xff) # <-- upper 8 bits
 
             self._dbusservice['/Pv/V'] = (self.solar_controller["solar_voltage"][0] / 10)
             self._dbusservice['/Pv/P'] = (self.solar_controller["solar_power"][0])
@@ -445,6 +449,12 @@ class MS4840(object):
             state = _calculate_state(self.solar_controller["load_status"][0],\
                                      self.solar_controller["solar_current"][0] * 0.01,\
                                      self.solar_controller["battery_voltage"][0] / 10)
+            if state in [3, 4, 5]:
+                self._dbusservice[f"/MppOperationMode"] = 2 # mppt tracker is active
+            elif state == 2:
+                self._dbusservice[f"/MppOperationMode"] = 0 # voltage or current limited
+            elif state == 0:
+                self._dbusservice[f"/MppOperationMode"] = 0 # off
             self._dbusservice['/State'] = state
 
             # it costs us very little to update the same variables in memory (this isn't low latency programming)
@@ -544,6 +554,22 @@ def main():
     global servicename
     global debugging
 
+    def get_port() -> dict:
+        port_info = {}
+        if len(sys.argv) > 1:
+            port_info["path"] = sys.argv[1] # /dev/ttyUSB1
+            port_info["suffix"] = sys.argv[1].split('/')[2] # ttyUSB
+            #controller = minimalmodbus.Instrument(port_info["path"], controller_address)
+            #servicename = 'com.victronenergy.solarcharger.' + port_info["suffix"]
+        else:
+            logger.info(f"no port given. bye.")
+            sys.exit()
+        
+        return port_info
+
+    port_info = get_port()
+    mppt_controllers = {}
+    
     # gratuitously copied from mrmanual
     def handle_exit_signal(sig, frame, code: int = 0):
         logger.info("Exit signal received, exiting gracefully...")

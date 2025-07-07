@@ -1,6 +1,7 @@
 # Standard library imports
 import bisect
 import configparser
+import datetime
 import logging
 import sys
 from pathlib import Path
@@ -19,7 +20,7 @@ debugging = False
 # only send debug level detail to the file
 if debugging == True:
     logger.setLevel(logging.DEBUG)
-    handler = logging.FileHandler('/data/log/dbus-ms4840/debug.log')
+    handler = logging.FileHandler('{:%Y-%m-%d}_ms4840.log'.format(datetime.now()))
     handler.setLevel(logging.DEBUG)
     logger.addHandler(handler)
 else:
@@ -29,7 +30,6 @@ else:
     shandler.setLevel(logging.INFO)
     logger.addHandler(shandler)
 
-    fhandler = logging.FileHandler('/data/log/dbus-ms4840/debug.log')
+    fhandler = logging.FileHandler('{:%Y-%m-%d}_ms4840.log'.format(datetime.now()))
     fhandler.setLevel(logging.DEBUG)
     logger.addHandler(fhandler)
-    
