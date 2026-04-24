@@ -348,7 +348,7 @@ class MS4840(object):
             charging_status = (status & 0xff) # low byte
 
             if debugging == True:
-                print(f'status word={status} (low={charging_status}, high={load_status}), current={s_curr}', battvolt={b_volt})
+                print(f'status word={status} (low={charging_status}, high={load_status}), current={s_curr}, battvolt={b_volt}')
 
             if charging_status == 0: # we are off, due to darkness?
                 return 0 # off
