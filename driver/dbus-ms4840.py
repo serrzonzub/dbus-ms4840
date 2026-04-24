@@ -346,6 +346,10 @@ class MS4840(object):
             # based on doc, high 8 bytes are load status, low 8 bytes are charging status
             load_status = (status >> 8 & 0xff) # high byte
             charging_status = (status & 0xff) # low byte
+
+            if debugging == True:
+                print(f'status word={status} (low={charging_status}, high={load_status}), current={s_curr}', battvolt={b_volt})
+
             if charging_status == 0: # we are off, due to darkness?
                 return 0 # off
             elif charging_status == 1: # open charge mode
