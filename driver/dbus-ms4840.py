@@ -217,7 +217,7 @@ class MS4840(object):
         logger.info(f"trying to register '{servicename}' on the dbus")
         res = self._dbusservice = VeDbusService(servicename, register=False)
 
-        self.debugging = False
+        self.debugging = debugging
         self._paths = paths
         self.got_history = False
         self.loop_index = 0
@@ -337,6 +337,8 @@ class MS4840(object):
     # this is where the bulk of the work is done to read values and update the data
     def _update(self):
         global exceptionCounter
+        # update my debugging based on global debugging (signal triggered change)
+        self.debugging = debugging
         start_time = time.process_time()
 
         def _convert_to_string(data):
@@ -594,18 +596,18 @@ def main():
         sys.exit(code)
 
     # use SIGUSR1 to toggle debugging
-    def handle_usr1_signal(signum, frame: None):
+    def handle_usr1_signal(signum):
         global debugging
 
         current_level = logging.getLogger().getEffectiveLevel()
         if current_level > logging.DEBUG:
             logger.info('debug logging on')
             logging.getLogger().setLevel(logging.DEBUG)
-            ms4840.debugging = True
+            debugging = True
         else:
             logging.getLogger().setLevel(logging.INFO)
             logger.info('debug logging off')
-            ms4840.debugging = False
+            debugging = False
 
     # register the signal handler(s)
     signal.signal(signal.SIGINT, handle_exit_signal)
@@ -630,7 +632,8 @@ def main():
     ms4840 = MS4840(paths = solar_charger_dict)
 
     # and off to the races we go
-    logger.info("Venus OS " + get_venus_os_version() + " (" + get_venus_os_image_type() + ") running on " + get_venus_os_device_type())
+    logger.info(f'Welcome to dbus-ms4840 version {softwareversion} (c) Serron Zub (serronzub@gmail.com)')
+    logger.info(f'Venus OS {get_venus_os_version()} ({get_venus_os_image_type()}) running on + {get_venus_os_device_type()}')
     logger.info('Connected to dbus, and switching over to GLib.MainLoop() (= event based)')
 
     # create a GLib loop
