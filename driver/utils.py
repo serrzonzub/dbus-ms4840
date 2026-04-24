@@ -32,4 +32,32 @@ else:
     fhandler = logging.FileHandler('/data/log/dbus-ms4840/debug.log')
     fhandler.setLevel(logging.DEBUG)
     logger.addHandler(fhandler)
-    
+
+def get_venus_os_version() -> str:
+    """
+    Get the Venus OS version.
+
+    :return: Venus OS version, e.g. v3.60
+    """
+    with open("/opt/victronenergy/version", "r") as f:
+        return f.readline().strip()
+
+
+def get_venus_os_image_type() -> str:
+    """
+    Get the Venus OS image type
+
+    :return: Venus OS image type: normal or large
+    """
+    with open("/etc/venus/image-type", "r") as f:
+        return f.readline().strip()
+
+
+def get_venus_os_device_type() -> str:
+    """
+    Get the Venus OS device type.
+
+    :return: Venus OS device type, e.g. Venus GX, Cerbo GX, etc.
+    """
+    with open("/sys/firmware/devicetree/base/model", "r") as f:
+        return f.readline().strip()

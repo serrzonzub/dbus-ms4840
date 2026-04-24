@@ -38,7 +38,11 @@ import sys
 import platform
 import argparse
 from dbushelper import DbusHelper
-from utils import logger, debugging
+from utils import (logger, debugging,
+    get_venus_os_version,
+    get_venus_os_image_type,
+    get_venus_os_device_type,
+)
 
 # victron packages
 sys.path.insert(
@@ -49,6 +53,7 @@ sys.path.insert(
     ),
 )
 from vedbus import VeDbusService  # noqa: E402
+from ve_utils import get_vrm_portal_id  # noqa: E402
 from settingsdevice import (  # noqa: E402
     SettingsDevice,
 )
@@ -58,7 +63,7 @@ baud_rate = 9600 # ms4840 doesn't speed any faster
 controller_address = 1 # the andress of the controller
 
 # general variables
-softwareversion = '0.9.3'
+softwareversion = '0.9.4 (20260424)'
 serialnumber = '0000000000000000'
 productname='ms4840'
 hardwareversion = '00.00'
@@ -570,7 +575,7 @@ class MS4840(object):
             logger.debug("spent %f in _update" % (elapsed_time))
             logger.debug(f'{self.solar_controller}')
 
-        # and we're done
+        # and we're done - always return True
         return True
 
 def main():
@@ -591,10 +596,12 @@ def main():
     def handle_usr1_signal(signum, frame):
         current_level = logging.getLogger().getEffectiveLevel()
         if current_level > logging.DEBUG:
+            logger.info('debug logging on')
             logging.getLogger().setLevel(logging.DEBUG)
             debugging = True
         else:
             logging.getLogger().setLevel(logging.INFO)
+            logger.info('debug logging off')
             debugging = False
 
     # register the signal handler(s)
@@ -604,7 +611,7 @@ def main():
 
     from dbus.mainloop.glib import DBusGMainLoop
     # Have a mainloop, so we can send/receive asynchronous calls to and from dbus
-    DBusGMainLoop(set_as_default=True)
+    DBusGMainLoop(set_as_default = True)
 
     # add to the dbus paths
     paths_dbus = {
@@ -616,12 +623,17 @@ def main():
     helper = DbusHelper(1, servicename)
     helper.create_pid_file()
 
-    # create the mppt soalr charger object
+    # create the mppt solar charger object
     ms4840 = MS4840(paths = solar_charger_dict)
 
     # and off to the races we go
+    logger.info("Venus OS " + get_venus_os_version() + " (" + get_venus_os_image_type() + ") running on " + get_venus_os_device_type())
     logger.info('Connected to dbus, and switching over to GLib.MainLoop() (= event based)')
+
+    # create a GLib loop
     mainloop = GLib.MainLoop()
+    # add the signal to the mainloop
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, handle_usr1_signal, None)
     try:
         mainloop.run()
     except KeyboardInterrupt:
