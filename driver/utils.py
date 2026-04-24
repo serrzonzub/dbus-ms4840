@@ -33,6 +33,7 @@ else:
     fhandler.setLevel(logging.DEBUG)
     logger.addHandler(fhandler)
 
+
 def get_venus_os_version() -> str:
     """
     Get the Venus OS version.

@@ -214,9 +214,10 @@ logger.info("Starting dbus-ms4840")
 
 class MS4840(object):
     def __init__(self, paths):
-        print(f"trying to register '{servicename}' on the dbus")
+        logger.info(f"trying to register '{servicename}' on the dbus")
         res = self._dbusservice = VeDbusService(servicename, register=False)
 
+        self.debugging = False
         self._paths = paths
         self.got_history = False
         self.loop_index = 0
@@ -569,9 +570,9 @@ class MS4840(object):
             self.loop_index = 0  # overflow from 255 to 0
         self._dbusservice["/UpdateIndex"] = self.loop_index
 
-        # calculate the elapsed time if debugging is enabled
-        if debugging == True:
-            elapsed_time = (time.process_time() - start_time)
+        # calculate the elapsed time and report it if debugging is enabled
+        elapsed_time = (time.process_time() - start_time)
+        if self.debugging == True:
             logger.debug("spent %f in _update" % (elapsed_time))
             logger.debug(f'{self.solar_controller}')
 
@@ -593,16 +594,18 @@ def main():
         sys.exit(code)
 
     # use SIGUSR1 to toggle debugging
-    def handle_usr1_signal(signum, frame):
+    def handle_usr1_signal(signum, frame: None):
+        global debugging
+
         current_level = logging.getLogger().getEffectiveLevel()
         if current_level > logging.DEBUG:
             logger.info('debug logging on')
             logging.getLogger().setLevel(logging.DEBUG)
-            debugging = True
+            ms4840.debugging = True
         else:
             logging.getLogger().setLevel(logging.INFO)
             logger.info('debug logging off')
-            debugging = False
+            ms4840.debugging = False
 
     # register the signal handler(s)
     signal.signal(signal.SIGINT, handle_exit_signal)
