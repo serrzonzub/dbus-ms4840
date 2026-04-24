@@ -57,7 +57,7 @@ baud_rate = 9600 # ms4840 doesn't speed any faster
 controller_address = 1 # the andress of the controller
 
 # general variables
-softwareversion = '0.9'
+softwareversion = '0.9.2'
 serialnumber = '0000000000000000'
 productname='ms4840'
 hardwareversion = '00.00'
@@ -73,22 +73,17 @@ total_trackers = 1 # number of mppt devices
 def _a(p, v): # amps
     return str("%.1f" % v) + "A"
 
-
 def _n(p, v): # number
     return str("%i" % v)
-
 
 def _s(p, v): # string
     return str("%s" % v)
 
-
 def _v(p, v): # voltage
     return str("%.2f" % v) + "V"
 
-
 def _w(p, v): # watts
     return str("%i" % v) + "W"
-
 
 def _kwh(p, v): # kilowatt hours
     return str("%i" % v) + "kWh"
@@ -99,6 +94,7 @@ def _wh(p, v): # watt hours
 def _C(p, v): # celcius
     return str("%i" % v) + "°C"
 
+# dictionary for various solar charger valeus
 solar_charger_dict = {
     # general data
     "/NrOfTrackers": {"value": None, "textformat": _n},
@@ -226,11 +222,15 @@ class MS4840(object):
             "float": 0 # total float charge time
         }
         self.pdu_addresses = {\
-            "sver": {"reg": 20, "len": 1}, # 0x0014h\
-            "hver": {"reg": 21, "len": 1}, # 0x0015h\
-            "system_info": {"reg": 12, "len": 8}, # 0x000Ch\
+            "sver": {"reg": 20, "len": 1}, # 0x0014h
+            "hver": {"reg": 21, "len": 1}, # 0x0015h
+            "system_info": {"reg": 12, "len": 8}, # 0x000Ch
 
-            "load_status": {"reg": 269, "len": 1}, # 0x010Dh\
+            # annex 6
+            #    0-no charge, 1-open charge, 2-mppt charge
+            #    3-equializing charge, 4-boost charge, 5-float charge
+            #    6-current limit (over power or over temp)
+            "load_status": {"reg": 269, "len": 1}, # 0x010Dh
             "current_system_voltage": {"reg": 256, "len": 1}, # 0x0100h
             "battery_power": {"reg": 257, "len": 1}, # 0x0101h
             "battery_voltage": {"reg": 258, "len": 1}, # 0x0102h
@@ -241,9 +241,11 @@ class MS4840(object):
             "max_power_day": {"reg": 266, "len": 1}, # 0x010Ah
             "power_gen_day": {"reg": 267, "len": 1}, # 0x010Bh
             "alarm_info": {"reg": 270, "len": 1}, # 0x010Eh
-            "battery_type": {"reg": 515, "len": 1}, # 0x0202h
+            #"system_voltage": {"reg": 515, "len": 1}, # 0x0202h - 12/24/36/48/FF(auto)
+            "battery_type": {"reg": 516, "len": 1}, # 0x0203h - 0-3 (flood, sealed, gel, li)
             "uptime": {"reg": 271, "len": 1}, # 0x010fh
             "total_power_generation": {"reg": 272, "len": 2}, # 0x0110-0x0111h, also total yield?
+            "total_power_consumption": {"reg": 274, "len": 2 }, # 0x112-0x113h
             "0dhist": {"reg": 1024, "len": 5}, # 0x0400h
             "1dhist": {"reg": 1025, "len": 5} # 0x0400h
         }
@@ -340,12 +342,15 @@ class MS4840(object):
 
         # translate the ms4840 mptt state to victron's state (i think/hope)
         #    - not sure the s_curr values reflect true state, i'm sure it's more complicated
-        def _calculate_state(status, s_curr, b_volt):
-            if status == 0: # we are off, due to darkness?
+        def _calculate_state(status: int, s_curr, b_volt):
+            # based on doc, high 8 bytes are load status, low 8 bytes are charging status
+            load_status = (status >> 8 & 0xff) # high byte
+            charging_status = (status & 0xff) # low byte
+            if charging_status == 0: # we are off, due to darkness?
                 return 0 # off
-            elif status == 1: # open charge mode
+            elif charging_status == 1: # open charge mode
                 return 2 # fault, although this isn't quite accurate
-            elif status == 2: # mppt reports mptt
+            elif charging_status == 2: # mppt reports mptt
                 # calculate which mode we are in based on solar current (amps)?
                 if s_curr > 10:
                     return 3 # bulk
@@ -354,13 +359,13 @@ class MS4840(object):
                 elif s_curr < 3:
                     return 5 # float
                 return 3 # mppt tracker active
-            elif status == 3: # mppt reports equalizing
+            elif charging_status == 3: # mppt reports equalizing
                 return 7 # equalize
-            elif status == 4: # mppt reports boost
+            elif charging_status == 4: # mppt reports boost
                 return 3 # boost and bulk are the same?
-            elif status == 5: # mptt reports float
+            elif charging_status == 5: # mptt reports float
                 return 5 # float
-            elif status == 6: # mpttp reports current over power or over temperature
+            elif charging_status == 6: # mpttp reports current over power or over temperature
                 return 2 # fault
             else: # shouldn't get here
                 return 3 # default to equalizing charge?
@@ -441,11 +446,20 @@ class MS4840(object):
             self._dbusservice['/History/Daily/0/Yield'] = (self.solar_controller["power_gen_day"][0] / 1000) # in watts
             self._dbusservice['/History/Daily/0/MaxPower'] = (self.solar_controller["max_power_day"][0]) # in watts
 
-            # state is the current method the battery is being charged (bulk, absortion, float)
-            state = _calculate_state(self.solar_controller["load_status"][0],\
+            # mppt_state is the current method the battery is being charged (bulk, absortion, float)
+            mptt_state = _calculate_state(self.solar_controller["load_status"][0],\
                                      self.solar_controller["solar_current"][0] * 0.01,\
                                      self.solar_controller["battery_voltage"][0] / 10)
-            self._dbusservice['/State'] = state
+            self._dbusservice['/State'] = mptt_state
+
+            # set the /Mode and /DeviceOffReason
+            if mptt_state == 0:
+                self._dbusservice['/Mode'] = 4 # off
+                self._dbusservice['/DeviceOffReason'] = 1 # no/low input power
+            else:
+                self._dbusservice['/Mode'] = 1 # on
+                self._dbusservice['/DeviceOffReason'] = -1 # unset?
+
 
             # it costs us very little to update the same variables in memory (this isn't low latency programming)
             # 0dhist': [115, 0, 248, 145, 131] charge Wh/today, load today, max power gen todat (watt), max battery, min battery
