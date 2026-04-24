@@ -27,6 +27,7 @@ import serial
 import minimalmodbus
 import time
 import datetime
+import logging
 import dbus
 from dbus.mainloop.glib import DBusGMainLoop
 from dbus.exceptions import (DBusException, UnknownMethodException)
@@ -57,7 +58,7 @@ baud_rate = 9600 # ms4840 doesn't speed any faster
 controller_address = 1 # the andress of the controller
 
 # general variables
-softwareversion = '0.9.2'
+softwareversion = '0.9.3'
 serialnumber = '0000000000000000'
 productname='ms4840'
 hardwareversion = '00.00'
@@ -66,7 +67,7 @@ connection = 'USB'
 servicename = 'com.victronenergy.solarcharger.tty'
 deviceinstance = 290    # VRM instanze
 exceptionCounter = 0
-history_days = 30 # number of days to get history for, if available
+history_days = 31 # number of days to get history for, if available
 total_trackers = 1 # number of mppt devices
 
 # formatting
@@ -221,6 +222,8 @@ class MS4840(object):
             "abs": 0, # total absorbtion charge time
             "float": 0 # total float charge time
         }
+
+        # "len" is word length, 1word=2bytes, 2words=4bytes, 5words=10bytes
         self.pdu_addresses = {\
             "sver": {"reg": 20, "len": 1}, # 0x0014h
             "hver": {"reg": 21, "len": 1}, # 0x0015h
@@ -240,12 +243,13 @@ class MS4840(object):
             "solar_voltage": {"reg": 265, "len": 1}, # 0x0109h
             "max_power_day": {"reg": 266, "len": 1}, # 0x010Ah
             "power_gen_day": {"reg": 267, "len": 1}, # 0x010Bh
+            "elec_consumption_day": {"reg": 268, "len": 1}, # 0x010Ch, in WH
             "alarm_info": {"reg": 270, "len": 1}, # 0x010Eh
             #"system_voltage": {"reg": 515, "len": 1}, # 0x0202h - 12/24/36/48/FF(auto)
             "battery_type": {"reg": 516, "len": 1}, # 0x0203h - 0-3 (flood, sealed, gel, li)
             "uptime": {"reg": 271, "len": 1}, # 0x010fh
-            "total_power_generation": {"reg": 272, "len": 2}, # 0x0110-0x0111h, also total yield?
-            "total_power_consumption": {"reg": 274, "len": 2 }, # 0x112-0x113h
+            "total_power_generation": {"reg": 272, "len": 3}, # 0x0110-0x0111h, also total yield?
+            "total_power_consumption": {"reg": 274, "len": 3}, # 0x112-0x113h
             "0dhist": {"reg": 1024, "len": 5}, # 0x0400h
             "1dhist": {"reg": 1025, "len": 5} # 0x0400h
         }
@@ -348,7 +352,7 @@ class MS4840(object):
             charging_status = (status & 0xff) # low byte
 
             if debugging == True:
-                print(f'status word={status} (low={charging_status}, high={load_status}), current={s_curr}, battvolt={b_volt}')
+                logger.debug(f'status word={status} (low={charging_status}, high={load_status}), current={s_curr}, battvolt={b_volt}')
 
             if charging_status == 0: # we are off, due to darkness?
                 return 0 # off
@@ -387,6 +391,51 @@ class MS4840(object):
 
             return hours, minutes, seconds
         
+        def _get_errorcode(error_code: int) -> int:
+            # default to no error
+            return_error_code = 0
+
+            if error_code == 0: # no error
+                return_error_code = 0 # no error
+            elif error_code == 1: # battery over discharged
+                logger.info("battery is over discharged")
+                return_error_code = 0 # no error - victron doens't have this error
+            elif error_code == 2: # battery over voltage
+                logger.info("battery voltage is low")
+                return_error_code = 2 # battery voltage too high
+            elif error_code == 3: # load short circuit
+                logger.info("load short circuit - check rs484/temp cables")
+                return_error_code = 8 # battery voltage sense disconnected
+            elif error_code == 4: # load power too big or load open circuit
+                logger.info("load power too big or load open circuit")
+                return_error_code = 18 # controller over-current
+            elif error_code == 5: # controller temperature too high
+                logger.info("solar controller temerature is too high")
+                return_error_code = 22 # controller over-current
+            elif error_code == 6: # surrounding temperature too high
+                logger.info("surrounding temperature is too high")
+                return_error_code = 1 # battery temperature too high
+            elif error_code == 7: # input power too big (too high)
+                logger.info("input power too big")
+                return_error_code = 35 # pv over-power
+            elif error_code == 8: # input side short circuit
+                logger.info("input side short circuit")
+                return_error_code = 27 # charger short circuit
+            elif error_code == 9: # solar panel input over voltage
+                logger.info(f"solar panel input is over voltage {self._dbusservice['/Pv/V']}")
+                return_error_code = 33
+            elif error_code == 12: # solar panel reverse connectivity ('doh!)
+                logger.info("solar panel polarity is reversed")
+                return_error_code = 27 # charger short circuit
+            elif error_code == 13: # battery reverse connectivity ('doh!)
+                logger.info("battery polarity is reversed")
+                return_error_code = 27 # charger short circuit
+            else: # ignore everything else and or set to 0
+                return_error_code = 0 # 
+            
+            return return_error_code
+
+
         # go get the data from the solar controller (mppt)
         #    everything returns as a list
         try:
@@ -412,24 +461,25 @@ class MS4840(object):
                 elif ((self.loop_index % 90) != 0) and "system_info" in pdu_name:
                     continue
 
-                #print(f"trying to read reg: {reg} - name: {pdu_name}")
+                if debugging:
+                    logger.debug(f"trying read_register (name={pdu_name}, reg={reg}, reg_len={reg_len})")
                 pdu_value = controller.read_registers(reg, reg_len, 3)
                 self.solar_controller[pdu_name] = pdu_value
         # communications error...
         except IOError as e:
-            logger.info(f"read_register failed")
             logger.info(f"error={e}")
+            logger.info(f"read_register (name={pdu_name}, reg={reg}, reg_len={reg_len}) failed")
         # everything else error...
         except:
             logger.info(f"exception={exceptions}")
+            logger.info(f"read_register (name={pdu_name}, reg={reg}, reg_len={reg_len}) failed")
             exceptionCounter +=1
             if exceptionCounter  >= 3:
                 #print(f"sleeping for 3")
                 exceptionCounter = 0
-                time.sleep(3)
+                time.sleep(3) # only sleeps when we've had three exceptions in a row
         # all seems to have gone well, let's process the data
         else:
-            logger.debug(self.solar_controller)
             exceptionCounter = 0
             self._dbusservice['/ProductName'] = _convert_to_string(self.solar_controller['system_info'])
             # these are just converted to integers and divided by 100 (for now)
@@ -462,11 +512,11 @@ class MS4840(object):
                 self._dbusservice['/DeviceOffReason'] = 1 # no/low input power
             else:
                 self._dbusservice['/Mode'] = 1 # on
-                self._dbusservice['/DeviceOffReason'] = -1 # unset?
+                self._dbusservice['/DeviceOffReason'] = None # unset?
 
 
             # it costs us very little to update the same variables in memory (this isn't low latency programming)
-            # 0dhist': [115, 0, 248, 145, 131] charge Wh/today, load today, max power gen todat (watt), max battery, min battery
+            # 0dhist': [115, 0, 248, 145, 131] charge Wh/today, load today, max power gen today (watt), max battery, min battery
             for day in range(int(history_days)):
                 history_key = str(day) + "hist"
 
@@ -500,43 +550,8 @@ class MS4840(object):
             self._dbusservice['/Yield/System'] = (self.solar_controller['total_power_generation'][1])
 
             # any errors - https://www.victronenergy.com/live/mppt-error-codes
-            if self.solar_controller["alarm_info"][0] == 0: # no error
-                self._dbusservice['/ErrorCode'] = 0 # no error
-            elif self.solar_controller["alarm_info"][0] == 1: # battery over discharged
-                logger.info("battery is over discharged")
-                self._dbusservice['/ErrorCode'] = 0 # no error - victron doens't have this error
-            elif self.solar_controller["alarm_info"][0] == 2: # battery over voltage
-                logger.info("battery voltage is low")
-                self._dbusservice['/ErrorCode'] = 2 # battery voltage too high
-            elif self.solar_controller["alarm_info"][0] == 3: # load short circuit
-                logger.info("load short circuit - check rs484/temp cables")
-                self._dbusservice['/ErrorCode'] = 8 # battery voltage sense disconnected
-            elif self.solar_controller["alarm_info"][0] == 4: # load power too big or load open circuit
-                logger.info("load power too big or load open circuit")
-                self._dbusservice['/ErrorCode'] = 18 # controller over-current
-            elif self.solar_controller["alarm_info"][0] == 5: # controller temperature too high
-                logger.info("solar controller temerature is too high")
-                self._dbusservice['/ErrorCode'] = 22 # controller over-current
-            elif self.solar_controller["alarm_info"][0] == 6: # surrounding temperature too high
-                logger.info("surrounding temperature is too high")
-                self._dbusservice['/ErrorCode'] = 1 # battery temperature too high
-            elif self.solar_controller["alarm_info"][0] == 7: # input power too big (too high)
-                logger.info("input power too big")
-                self._dbusservice['/ErrorCode'] = 35 # pv over-power
-            elif self.solar_controller["alarm_info"][0] == 8: # input side short circuit
-                logger.info("input side short circuit")
-                self._dbusservice['/ErrorCode'] = 27 # charger short circuit
-            elif self.solar_controller["alarm_info"][0] == 9: # solar panel input over voltage
-                logger.info(f"solar panel input is over voltage {self._dbusservice['/Pv/V']}")
-                self._dbusservice['/ErrorCode'] = 33
-            elif self.solar_controller["alarm_info"][0] == 12: # solar panel reverse connectivity ('doh!)
-                logger.info("solar panel polarity is reversed")
-                self._dbusservice['/ErrorCode'] = 27 # charger short circuit
-            elif self.solar_controller["alarm_info"][0] == 13: # battery reverse connectivity ('doh!)
-                logger.info("battery polarity is reversed")
-                self._dbusservice['/ErrorCode'] = 27 # charger short circuit
-            else: # ignore everything else and or set to 0
-                self._dbusservice['/ErrorCode'] = 0 # battery high irpple current
+            self._dbusservice['/ErrorCode'] = _get_errorcode(self.solar_controller["alarm_info"][0])
+
 
         # midnight! (or close to it in case we miss the exact midnight hour)
         hours, minutes, seconds = _calculate_midnight()
@@ -563,7 +578,7 @@ def main():
     global debugging
 
     # gratuitously copied from mrmanual
-    def handle_exit_signal(sig, frame, code: int = 0):
+    def handle_exit_signal(signum, frame, code: int = 0):
         logger.info("Exit signal received, exiting gracefully...")
         if "mainloop" in globals() and mainloop is not None:
             mainloop.quit()
@@ -572,9 +587,20 @@ def main():
         logger.info(f"stopped dbus-ms4840: exit code: {code}")
         sys.exit(code)
 
+    # use SIGUSR1 to toggle debugging
+    def handle_usr1_signal(signum, frame):
+        current_level = logging.getLogger().getEffectiveLevel()
+        if current_level > logging.DEBUG:
+            logging.getLogger().setLevel(logging.DEBUG)
+            debugging = True
+        else:
+            logging.getLogger().setLevel(logging.INFO)
+            debugging = False
+
     # register the signal handler(s)
     signal.signal(signal.SIGINT, handle_exit_signal)
     signal.signal(signal.SIGTERM, handle_exit_signal)
+    signal.signal(signal.SIGUSR1, handle_usr1_signal)
 
     from dbus.mainloop.glib import DBusGMainLoop
     # Have a mainloop, so we can send/receive asynchronous calls to and from dbus

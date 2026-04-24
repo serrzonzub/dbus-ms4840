@@ -14,7 +14,7 @@ logger = logging.getLogger("ms4840")
 
 # TODO
 #    - read this from a config.ini
-debugging = False
+debugging = False # use SIGUSR1 to override this
 
 # only send debug level detail to the file
 if debugging == True:
